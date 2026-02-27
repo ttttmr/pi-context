@@ -9,7 +9,10 @@
     "skills",
     "README.md"
   ],
-  "scripts": {},
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/self-manage.test.js"
+  },
   "keywords": [
     "pi-agent",
     "pi-package",

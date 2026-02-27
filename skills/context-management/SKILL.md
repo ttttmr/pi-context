@@ -1,6 +1,6 @@
 ---
 name: context-management
-description: Strategies for efficient context management using context_log, context_tag, and context_checkout. Learn when to tag, how to visualize the graph, and safe ways to squash history. Use for complex refactoring, debugging, and long conversations.
+description: Strategies for efficient context management using context_self_manage, context_log, context_tag, and context_checkout. Learn when to assess health, tag, visualize the graph, and safely squash history. Use for complex refactoring, debugging, and long conversations.
 ---
 
 # Context Management
@@ -38,7 +38,7 @@ Manage your context window like a Git repository. You are the maintainer.
 Follow this cycle for every major task:
 
 1.  **CHECK:** Verify state.
-    `context_log`
+    `context_self_manage({})`
 2.  **START:** Tag the beginning.
     `context_tag({ name: "task-start" })`
 3.  **WORK:** Execute steps.
@@ -53,6 +53,7 @@ Follow this cycle for every major task:
 
 | Tool | Analog | Purpose | When to Use |
 | :--- | :--- | :--- | :--- |
+| `context_self_manage` | `git status` | Assess context health and recommend/apply next maintenance action. | At task start, after noisy work, when context may be drifting. |
 | `context_tag` | `git tag` | Bookmark a stable state. | Before risky changes. Before starting a new task. |
 | `context_log` | `git log` | See where you are. | When you feel lost. To find IDs for checkout. |
 | `context_checkout`| `git reset --soft` | **Time Travel / Squash.** | To undo mistakes. To compress history. |
@@ -103,7 +104,7 @@ If you fail 3 times:
 
 ## The "Context Health" Check
 
-If you cannot answer these, run `context_log`:
+If you cannot answer these, run `context_self_manage({})` and then `context_log` if needed:
 
 | Question | Answer Source |
 | :--- | :--- |
@@ -143,6 +144,21 @@ Examples:
 | **Vague Summaries** ("Done", "Fixed") | **Detailed Summaries** ("Found bug in line 40. Fixed with patch X.") |
 
 ## Recipes (Copy-Paste)
+
+### 0. The "Self-Manager" (Default Check)
+**Goal:** Let the agent quickly decide what to do next.
+
+```javascript
+// Assess only
+context_self_manage({})
+
+// Auto-apply action when needed
+context_self_manage({
+  autoApply: true,
+  carryoverMessage: "Completed noisy exploration; keeping only decisions and next actions.",
+  backupTag: "pre-auto-squash"
+})
+```
 
 ### 1. The "Miner" (Immediate Squash)
 **Goal:** Pure information gathering (Reading files, Searching web).

@@ -11,6 +11,7 @@ import type {
 } from "@mariozechner/pi-ai";
 import { Type, type Static } from "@sinclair/typebox";
 import { Container, Text, Spacer } from "@mariozechner/pi-tui";
+import { DEFAULT_THRESHOLDS, evaluateContextHealth } from "./self-manage.js";
 
 // Define missing types locally as they are not exported from the main entry point
 interface SessionTreeNode {
@@ -35,7 +36,18 @@ const ContextTagParams = Type.Object({
   target: Type.Optional(Type.String({ description: "The commit ID to tag. Defaults to HEAD (current state)." })),
 });
 
-const isInternal = (name: string) => ["context_tag", "context_log", "context_checkout"].includes(name);
+const ContextSelfManageParams = Type.Object({
+  autoApply: Type.Optional(Type.Boolean({ description: "If true, automatically apply the recommended action (tag/squash) when needed." })),
+  tagName: Type.Optional(Type.String({ description: "Optional explicit tag name when action is TAG." })),
+  checkoutTarget: Type.Optional(Type.String({ description: "Optional checkout target when action is SQUASH. Defaults to nearest tag, otherwise root." })),
+  carryoverMessage: Type.Optional(Type.String({ description: "Required for auto squash. Summary to carry to the new branch." })),
+  backupTag: Type.Optional(Type.String({ description: "Optional backup tag name before auto squash." })),
+  warnUsagePercent: Type.Optional(Type.Number({ description: "Override warning threshold for context usage percent." })),
+  squashUsagePercent: Type.Optional(Type.Number({ description: "Override critical threshold for automatic squash recommendation." })),
+  maxSegmentSteps: Type.Optional(Type.Number({ description: "Override max steps since last tag before warning." })),
+});
+
+const isInternal = (name: string) => ["context_tag", "context_log", "context_checkout", "context_self_manage"].includes(name);
 
 const resolveTargetId = (sm: SessionManager, target: string): string => {
   if (target.toLowerCase() === "root") {
@@ -59,6 +71,30 @@ const formatTokens = (n: number) => {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return Math.round(n / 1_000) + "k";
   return n.toString();
+};
+
+const getBranchTagState = (sm: SessionManager, branch: SessionEntry[]) => {
+  let stepsSinceTag = 0;
+  let nearestTagName = "None";
+  let nearestTagId: string | null = null;
+
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const id = branch[i].id;
+    const label = sm.getLabel(id);
+    if (label) {
+      nearestTagName = label;
+      nearestTagId = id;
+      break;
+    }
+    stepsSinceTag++;
+  }
+
+  return {
+    stepsSinceTag,
+    nearestTagName,
+    nearestTagId,
+    hasAnyTagOnBranch: nearestTagId !== null,
+  };
 };
 
 export default function (pi: ExtensionAPI) {
@@ -293,18 +329,7 @@ export default function (pi: ExtensionAPI) {
         usageStr = `${usage.percent.toFixed(1)}% (${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)})`;
       }
 
-      // Find the distance to the nearest tag
-      let stepsSinceTag = 0;
-      let nearestTagName = "None";
-      for (let i = branch.length - 1; i >= 0; i--) {
-        const id = branch[i].id;
-        const label = sm.getLabel(id);
-        if (label) {
-          nearestTagName = label;
-          break;
-        }
-        stepsSinceTag++;
-      }
+      const { stepsSinceTag, nearestTagName } = getBranchTagState(sm, branch);
 
       const hud = [
         `[Context Dashboard]`,
@@ -344,6 +369,142 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerTool({
+    name: "context_self_manage",
+    label: "Context Self Manage",
+    description: "Assess context health and recommend or auto-apply context maintenance (tag or squash).",
+    parameters: ContextSelfManageParams,
+    async execute(_id, params: Static<typeof ContextSelfManageParams>, _signal, _onUpdate, ctx) {
+      const sm = ctx.sessionManager as SessionManager;
+      const branch = sm.getBranch();
+      const usage = await ctx.getContextUsage();
+
+      if (!usage) {
+        return {
+          content: [{ type: "text", text: "Context usage data is unavailable. Run /context or context_log later." }],
+          details: {},
+        };
+      }
+
+      const tagState = getBranchTagState(sm, branch);
+      const health = evaluateContextHealth(
+        {
+          usagePercent: usage.percent,
+          usageTokens: usage.tokens,
+          contextWindow: usage.contextWindow,
+          stepsSinceTag: tagState.stepsSinceTag,
+          hasAnyTagOnBranch: tagState.hasAnyTagOnBranch,
+        },
+        {
+          warnUsagePercent: params.warnUsagePercent,
+          squashUsagePercent: params.squashUsagePercent,
+          maxSegmentSteps: params.maxSegmentSteps,
+        },
+      );
+
+      const thresholds = {
+        ...DEFAULT_THRESHOLDS,
+        warnUsagePercent: params.warnUsagePercent ?? DEFAULT_THRESHOLDS.warnUsagePercent,
+        squashUsagePercent: params.squashUsagePercent ?? DEFAULT_THRESHOLDS.squashUsagePercent,
+        maxSegmentSteps: params.maxSegmentSteps ?? DEFAULT_THRESHOLDS.maxSegmentSteps,
+      };
+
+      const lines: string[] = [
+        `[Self Manage Context]`,
+        `Health: ${health.level.toUpperCase()}`,
+        `Usage: ${usage.percent.toFixed(1)}% (${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)})`,
+        `Segment: ${tagState.stepsSinceTag} steps since '${tagState.nearestTagName}'`,
+        `Recommended action: ${health.recommendedAction.toUpperCase()}`,
+        `Thresholds: warn=${thresholds.warnUsagePercent}% squash=${thresholds.squashUsagePercent}% segment=${thresholds.maxSegmentSteps}`,
+      ];
+
+      if (health.reasons.length > 0) {
+        lines.push(`Reason(s):`);
+        for (const reason of health.reasons) {
+          lines.push(`- ${reason}`);
+        }
+      }
+
+      if (!params.autoApply || health.recommendedAction === "none") {
+        if (health.recommendedAction === "tag") {
+          const suggestedTag = params.tagName ?? `milestone-${Date.now().toString().slice(-6)}`;
+          lines.push(`Suggested next step: context_tag({ name: "${suggestedTag}" })`);
+        }
+        if (health.recommendedAction === "squash") {
+          const suggestedTarget = params.checkoutTarget ?? (tagState.nearestTagId ? tagState.nearestTagName : "root");
+          lines.push(`Suggested next step: context_checkout({ target: "${suggestedTarget}", message: "<carryover summary>", backupTag: "pre-squash-backup" })`);
+        }
+
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          details: {
+            health,
+            thresholds,
+          },
+        };
+      }
+
+      if (health.recommendedAction === "tag") {
+        const currentLeaf = sm.getLeafId();
+        if (!currentLeaf) {
+          lines.push("Auto-apply skipped: current leaf not found.");
+          return { content: [{ type: "text", text: lines.join("\n") }], details: { health, thresholds } };
+        }
+
+        const tagName = params.tagName ?? `auto-milestone-${Date.now().toString().slice(-6)}`;
+        pi.setLabel(currentLeaf, tagName);
+        lines.push(`Auto-applied: created tag '${tagName}' at ${currentLeaf}.`);
+
+        return { content: [{ type: "text", text: lines.join("\n") }], details: { health, thresholds, action: "tag", tagName } };
+      }
+
+      if (health.recommendedAction === "squash") {
+        if (!params.carryoverMessage || params.carryoverMessage.trim().length === 0) {
+          lines.push("Auto-apply blocked: carryoverMessage is required for squash.");
+          return { content: [{ type: "text", text: lines.join("\n") }], details: { health, thresholds } };
+        }
+
+        const currentLeaf = sm.getLeafId();
+        let target = params.checkoutTarget;
+        if (!target) {
+          target = tagState.nearestTagId ? tagState.nearestTagName : "root";
+        }
+
+        const resolvedTarget = resolveTargetId(sm, target);
+        if (currentLeaf === resolvedTarget) {
+          lines.push(`Auto-apply skipped: already at target '${target}'.`);
+          return { content: [{ type: "text", text: lines.join("\n") }], details: { health, thresholds } };
+        }
+
+        if (params.backupTag && currentLeaf) {
+          pi.setLabel(currentLeaf, params.backupTag);
+        }
+
+        const currentLabel = currentLeaf ? sm.getLabel(currentLeaf) : undefined;
+        const origin = currentLabel ? `tag: ${currentLabel}` : (currentLeaf || "unknown");
+        const enrichedMessage = `(summary from ${origin})\n${params.carryoverMessage}`;
+
+        await sm.branchWithSummary(resolvedTarget, enrichedMessage);
+
+        lines.push(`Auto-applied: checked out '${target}' (${resolvedTarget}).`);
+        lines.push(`Backup tag: ${params.backupTag || "none"}`);
+
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          details: {
+            health,
+            thresholds,
+            action: "squash",
+            target,
+            resolvedTarget,
+            backupTag: params.backupTag,
+          },
+        };
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }], details: { health, thresholds } };
+    },
+  });
 
   pi.registerCommand("context", {
     description: "Show context usage visualization",
