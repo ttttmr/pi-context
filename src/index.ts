@@ -2,6 +2,8 @@ import {
     type ExtensionAPI,
     type SessionManager,
     type SessionEntry,
+    ExtensionCommandContext,
+    getAgentDir,
 } from "@mariozechner/pi-coding-agent";
 import type {
     TextContent,
@@ -9,7 +11,9 @@ import type {
     ToolCall,
 } from "@mariozechner/pi-ai";
 import { Type, type Static } from "@sinclair/typebox";
-import { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { AutocompleteItem } from "@mariozechner/pi-tui";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { formatTokens } from "./utils.js";
 
 // Define missing types locally as they are not exported from the main entry point
@@ -21,9 +25,56 @@ interface SessionTreeNode {
 
 const InternalTools = ["context_tag", "context_log", "context_checkout"];
 let CommandCtx: ExtensionCommandContext | null = null;
-let CheckoutParams: any = null;
+interface CheckoutState {
+    target: string;
+    message: string;
+    backupTag?: string;
+    nid: string;
+    tid: string;
+    enrichedMessage: string;
+}
+
+let CheckoutParams: CheckoutState | null = null;
+let skillActivated = false;
 
 const isInternal = (name: string) => InternalTools.includes(name);
+
+// --- Config ---
+
+const CONFIG_PATH = join(getAgentDir(), "pi-context.json");
+
+interface AcmConfig {
+    autoEnable: boolean;
+}
+
+async function loadConfig(): Promise<AcmConfig> {
+    try {
+        const raw = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+        return { autoEnable: raw.autoEnable === true };
+    } catch {
+        // Ignore missing file or parse errors, return defaults
+    }
+    return { autoEnable: false };
+}
+
+async function saveConfig(config: AcmConfig): Promise<void> {
+    await mkdir(getAgentDir(), { recursive: true });
+    await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+}
+
+function activateAcm(pi: ExtensionAPI, notifyFn: (msg: string, type: "info" | "warning" | "error") => void): void {
+    notifyFn("Agentic Context Management enabled.", "info");
+    if (!skillActivated) {
+        skillActivated = true;
+        pi.sendMessage({
+            customType: "pi-context",
+            content: "use context-management skill",
+            display: false,
+        }, {
+            deliverAs: "followUp"
+        });
+    }
+}
 
 const resolveTargetId = (sm: SessionManager, target: string): string => {
     if (target.toLowerCase() === "root") {
@@ -63,20 +114,83 @@ const ContextTagParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+    const ACM_SUBCOMMANDS = ["auto", "show", "path", "help"];
+    const ACM_USAGE = "Usage: /acm [auto [on|off]|show|path|help] [message]";
+
     pi.registerCommand("acm", {
         description: "Enable agentic context management for the current session",
+        getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+            const trimmed = prefix.trimStart();
+
+            if (!trimmed.includes(" ")) {
+                const matches = ACM_SUBCOMMANDS.filter(s => s.startsWith(trimmed));
+                return matches.length > 0 ? matches.map(value => ({ value, label: value })) : null;
+            }
+
+            const spaceIdx = trimmed.indexOf(" ");
+            const sub = trimmed.slice(0, spaceIdx);
+            const rest = trimmed.slice(spaceIdx + 1);
+
+            if (sub === "auto") {
+                const options = ["on", "off"];
+                const matches = options.filter(o => o.startsWith(rest));
+                return matches.length > 0 ? matches.map(value => ({ value: `auto ${value}`, label: value })) : null;
+            }
+
+            return null;
+        },
         handler: async (args, ctx) => {
+            const trimmed = (args || "").trim();
+            const normalized = trimmed.toLowerCase();
+
+            if (normalized === "help") {
+                ctx.ui.notify(ACM_USAGE, "info");
+                return;
+            }
+
+            if (normalized === "show") {
+                const config = await loadConfig();
+                const active = CommandCtx !== null || skillActivated;
+                ctx.ui.notify(
+                    `ACM: active=${active ? "yes" : "no"}, autoEnable=${config.autoEnable ? "on" : "off"}, config=${CONFIG_PATH}`,
+                    "info"
+                );
+                return;
+            }
+
+            if (normalized === "path") {
+                ctx.ui.notify(CONFIG_PATH, "info");
+                return;
+            }
+
+            if (normalized === "auto" || normalized.startsWith("auto ")) {
+                const config = await loadConfig();
+                const arg = normalized === "auto" ? undefined : normalized.slice(5).trim();
+
+                if (arg === undefined) {
+                    config.autoEnable = !config.autoEnable;
+                } else if (arg === "on") {
+                    config.autoEnable = true;
+                } else if (arg === "off") {
+                    config.autoEnable = false;
+                } else {
+                    ctx.ui.notify("Usage: /acm auto [on|off]", "warning");
+                    return;
+                }
+
+                await saveConfig(config);
+                ctx.ui.notify(
+                    `ACM auto-enable: ${config.autoEnable ? "on" : "off"}.${config.autoEnable ? " New sessions will activate automatically." : ""}`,
+                    "info"
+                );
+                return;
+            }
+
+            // Default: enable ACM + optional message forwarding
             CommandCtx = ctx;
-            ctx.ui.notify("Agentic Context Management enabled.", "info");
-            pi.sendMessage({
-                customType: "pi-context",
-                content: "use context-management skill",
-                display: false,
-            }, {
-                deliverAs: "followUp"
-            });
-            if (args) {
-                pi.sendUserMessage(args)
+            activateAcm(pi, (msg, type) => ctx.ui.notify(msg, type));
+            if (trimmed) {
+                pi.sendUserMessage(trimmed);
             }
         }
     });
@@ -371,11 +485,15 @@ export default function (pi: ExtensionAPI) {
         parameters: ContextCheckoutParams,
         async execute(_id, params: Static<typeof ContextCheckoutParams>, _signal, _onUpdate, ctx) {
             if (!CommandCtx) {
-                ctx.ui.setEditorText(`/acm ${ctx.ui.getEditorText() || "continue"}`)
+                ctx.ui.setEditorText(`/acm ${ctx.ui.getEditorText() || "continue"}`);
+                const config = await loadConfig();
+                const hint = config.autoEnable
+                    ? "Auto-enable loaded the context management skill, but checkout requires an explicit `/acm` command for navigation control."
+                    : "Agentic context management is not enabled.";
                 return {
                     content: [{
                         type: "text",
-                        text: "Agentic context management is not enabled. Ask the user to run `/acm` in the pi to enable it, then retry."
+                        text: `${hint} Ask the user to run \`/acm\` in the editor, then retry.`
                     }],
                     details: {}
                 };
@@ -397,10 +515,14 @@ export default function (pi: ExtensionAPI) {
             const enrichedMessage = `(summary from ${origin})\n${params.message}`;
 
             const nid = await sm.branchWithSummary(tid, enrichedMessage);
-            CheckoutParams = params;
-            CheckoutParams.nid = nid;
-            CheckoutParams.tid = tid;
-            CheckoutParams.enrichedMessage = enrichedMessage;
+            CheckoutParams = {
+                target: params.target,
+                message: params.message,
+                backupTag: params.backupTag,
+                nid,
+                tid,
+                enrichedMessage,
+            };
 
             return { content: [{ type: "text", text: "checkout start" }], details: {} };
         },
@@ -435,5 +557,17 @@ export default function (pi: ExtensionAPI) {
         }, {
             triggerTurn: true,
         });
+    });
+
+    pi.on("session_start", async (_event, ctx) => {
+        // Reset per-session state
+        CommandCtx = null;
+        CheckoutParams = null;
+        skillActivated = false;
+
+        const config = await loadConfig();
+        if (config.autoEnable) {
+            activateAcm(pi, (msg, type) => ctx.ui.notify(msg, type));
+        }
     });
 }
