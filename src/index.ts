@@ -2,6 +2,8 @@ import {
     type ExtensionAPI,
     type SessionManager,
     type SessionEntry,
+    ExtensionCommandContext,
+    getAgentDir,
 } from "@mariozechner/pi-coding-agent";
 import type {
     TextContent,
@@ -9,11 +11,9 @@ import type {
     ToolCall,
 } from "@mariozechner/pi-ai";
 import { Type, type Static } from "@sinclair/typebox";
-import { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { formatTokens } from "./utils.js";
 
 // Define missing types locally as they are not exported from the main entry point
@@ -25,37 +25,41 @@ interface SessionTreeNode {
 
 const InternalTools = ["context_tag", "context_log", "context_checkout"];
 let CommandCtx: ExtensionCommandContext | null = null;
-let CheckoutParams: any = null;
+interface CheckoutState {
+    target: string;
+    message: string;
+    backupTag?: string;
+    nid: string;
+    tid: string;
+    enrichedMessage: string;
+}
+
+let CheckoutParams: CheckoutState | null = null;
 let skillActivated = false;
 
 const isInternal = (name: string) => InternalTools.includes(name);
 
 // --- Config ---
 
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "pi-context.json");
+const CONFIG_PATH = join(getAgentDir(), "pi-context.json");
 
 interface AcmConfig {
     autoEnable: boolean;
 }
 
-function loadConfig(): AcmConfig {
+async function loadConfig(): Promise<AcmConfig> {
     try {
-        if (existsSync(CONFIG_PATH)) {
-            const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-            return { autoEnable: raw.autoEnable === true };
-        }
+        const raw = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+        return { autoEnable: raw.autoEnable === true };
     } catch {
-        // Ignore parse errors, return defaults
+        // Ignore missing file or parse errors, return defaults
     }
     return { autoEnable: false };
 }
 
-function saveConfig(config: AcmConfig): void {
-    const dir = dirname(CONFIG_PATH);
-    if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+async function saveConfig(config: AcmConfig): Promise<void> {
+    await mkdir(getAgentDir(), { recursive: true });
+    await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
 }
 
 function activateAcm(pi: ExtensionAPI, notifyFn: (msg: string, type: "info" | "warning" | "error") => void): void {
@@ -145,7 +149,7 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (normalized === "show") {
-                const config = loadConfig();
+                const config = await loadConfig();
                 const active = CommandCtx !== null || skillActivated;
                 ctx.ui.notify(
                     `ACM: active=${active ? "yes" : "no"}, autoEnable=${config.autoEnable ? "on" : "off"}, config=${CONFIG_PATH}`,
@@ -160,7 +164,7 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (normalized === "auto" || normalized.startsWith("auto ")) {
-                const config = loadConfig();
+                const config = await loadConfig();
                 const arg = normalized === "auto" ? undefined : normalized.slice(5).trim();
 
                 if (arg === undefined) {
@@ -174,7 +178,7 @@ export default function (pi: ExtensionAPI) {
                     return;
                 }
 
-                saveConfig(config);
+                await saveConfig(config);
                 ctx.ui.notify(
                     `ACM auto-enable: ${config.autoEnable ? "on" : "off"}.${config.autoEnable ? " New sessions will activate automatically." : ""}`,
                     "info"
@@ -481,11 +485,15 @@ export default function (pi: ExtensionAPI) {
         parameters: ContextCheckoutParams,
         async execute(_id, params: Static<typeof ContextCheckoutParams>, _signal, _onUpdate, ctx) {
             if (!CommandCtx) {
-                ctx.ui.setEditorText(`/acm ${ctx.ui.getEditorText() || "continue"}`)
+                ctx.ui.setEditorText(`/acm ${ctx.ui.getEditorText() || "continue"}`);
+                const config = await loadConfig();
+                const hint = config.autoEnable
+                    ? "Auto-enable loaded the context management skill, but checkout requires an explicit `/acm` command for navigation control."
+                    : "Agentic context management is not enabled.";
                 return {
                     content: [{
                         type: "text",
-                        text: "Agentic context management is not enabled. Ask the user to run `/acm` in the pi to enable it, then retry."
+                        text: `${hint} Ask the user to run \`/acm\` in the editor, then retry.`
                     }],
                     details: {}
                 };
@@ -507,10 +515,14 @@ export default function (pi: ExtensionAPI) {
             const enrichedMessage = `(summary from ${origin})\n${params.message}`;
 
             const nid = await sm.branchWithSummary(tid, enrichedMessage);
-            CheckoutParams = params;
-            CheckoutParams.nid = nid;
-            CheckoutParams.tid = tid;
-            CheckoutParams.enrichedMessage = enrichedMessage;
+            CheckoutParams = {
+                target: params.target,
+                message: params.message,
+                backupTag: params.backupTag,
+                nid,
+                tid,
+                enrichedMessage,
+            };
 
             return { content: [{ type: "text", text: "checkout start" }], details: {} };
         },
@@ -553,7 +565,7 @@ export default function (pi: ExtensionAPI) {
         CheckoutParams = null;
         skillActivated = false;
 
-        const config = loadConfig();
+        const config = await loadConfig();
         if (config.autoEnable) {
             activateAcm(pi, (msg, type) => ctx.ui.notify(msg, type));
         }
