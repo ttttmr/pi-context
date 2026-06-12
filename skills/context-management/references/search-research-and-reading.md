@@ -17,10 +17,10 @@ This reference is for **input-heavy work where the process is much larger than t
 1. Create a checkpoint before a large search or reading loop.
 2. Search, browse, read, inspect, and follow leads normally.
 3. If you lose orientation, review the timeline.
-4. Once the investigation yields a stable finding and there is another step to take, compact to a cleaner anchor.
+4. Once the investigation yields a stable finding and there is another step to take, compact to the anchor that gives the next step a focused working set.
 5. Continue with the conclusion, recommendation, or next action instead of carrying the entire raw exploration forward. If the finding is the final answer to the user's current request, answer first and wait; compact on the next user message if it starts new work.
 
-Do not stop at "I already made a checkpoint" if the investigation phase is complete and the conversation is continuing. The cleanup move for completed research is usually a compact back to the best earlier anchor at the next useful continuation boundary.
+Do not stop at "I already made a checkpoint" if the investigation phase is complete and the conversation is continuing. The cleanup move for completed research is usually a compact to the anchor that preserves only the raw context the next step still needs.
 
 **Important:** “another step” includes the next phase of the same request. If you searched to find the right data source, previous task record, API shape, rule id, or query pattern, then the next execution step (running the real query/export, implementing, validating, etc.) is an immediate continuation. Compact before that execution step, not only before a future user message.
 
@@ -61,9 +61,10 @@ Do not compact in the middle of a still-open search loop just because the thread
 
 ## Message quality for research compactions
 
-Research compactions are especially sensitive to summary quality. The raw exploration may contain details that become important later, but returning to the backup branch is a context switch. Before compacting, preserve the likely-useful details in the summary.
+Research compactions are especially sensitive to summary quality. The raw exploration may contain details that become important later, but returning to the backup branch is a context switch. Preserve the state needed to use the finding, not the whole journey.
 
 Include:
+- **Current task/state:** what the research unlocked and how it will be used next
 - **Finding:** what is now known
 - **Source anchors:** key files, URLs, docs, sessions, commands, queries, or records used to reach the finding
 - **Evidence:** important numbers, errors, examples, IDs, or constraints that support the finding
@@ -87,7 +88,7 @@ context_timeline();
 context_compact({
   target: "timeout-investigation-start",
   backupCheckpoint: "timeout-investigation-raw-history",
-  summary: "Found DB connection pool exhaustion as the likely root cause. Evidence: logs show pool wait timeouts during peak traffic; config has pool size 10; no network errors found in the checked logs. Rejected lead: API gateway timeout was downstream of DB waits, not the origin. Reason: investigation phase is complete and ready to compact before mitigation planning. Backup: timeout-investigation-raw-history if exact log lines are needed. Next step: propose mitigation and validation steps."
+  summary: "Current task: plan mitigation for API timeouts. State: DB connection pool exhaustion is the likely root cause. Evidence: logs show pool wait timeouts during peak traffic; config has pool size 10; no network errors found in the checked logs. Rejected lead: API gateway timeout was downstream of DB waits, not the origin. Backup: timeout-investigation-raw-history if exact log lines are needed. Next step: propose mitigation and validation steps."
 });
 ```
 

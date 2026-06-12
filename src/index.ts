@@ -57,20 +57,23 @@ const resolveTargetId = (sm: SessionManager, target: string): string => {
     return target;
 };
 
+const ContextTimelineDescription = "Inspect the active conversation path as a structural map: checkpoints, summaries/compactions, branch points, user turns, and current position. Use when orientation or compact target selection depends on the shape of history.";
 const ContextTimelineParams = Type.Object({
-    limit: Type.Optional(Type.Number({ description: "History limit for visible entries (default: 50)." })),
-    verbose: Type.Optional(Type.Boolean({ description: "If true, show all messages. If false (default), collapse intermediate AI steps and only show milestones, user messages, checkpoints, branch points, and summaries." })),
+    limit: Type.Optional(Type.Number({ description: "Maximum visible timeline entries (default: 50)." })),
+    verbose: Type.Optional(Type.Boolean({ description: "If true, show all messages including internal context-tool traffic. If false (default), collapse to structural milestones." })),
 });
 
+const ContextCompactDescription = "Create a summarized continuation branch from an earlier checkpoint or history node. The selected target is the branch point; the summary must restore the useful state from the compacted path after that target. This changes conversation history only; it does not modify or roll back disk files or external systems.";
 const ContextCompactParams = Type.Object({
-    target: Type.String({ description: "Where to continue from after compacting. Can be a checkpoint name, a history node ID, or root. This becomes the starting point for a fresh continuation of the conversation." }),
-    summary: Type.String({ description: "The handoff summary for the fresh continuation. Include the stable result, reason for compacting, important changes/decisions, next step, and any source anchors/evidence/open questions likely needed soon. Do not rely on backupCheckpoint for details that the next phase will probably need." }),
-    backupCheckpoint: Type.Optional(Type.String({ description: "Optional checkpoint name to apply to the current conversation state before compacting. Use this to preserve a named backup of the noisy path you are about to compact away; mention in the summary when future-you should return to it." })),
+    target: Type.String({ description: "Checkpoint name, history node ID, or root to use as the branch point for the summarized continuation." }),
+    summary: Type.String({ description: "Handoff summary injected into the new continuation branch. Restore current task/state, decisions/constraints, important external side effects (changed files, processes, browser/tickets/remote state), validation status, source anchors/evidence/open questions likely needed soon, and explicit next step. Do not rely on backupCheckpoint for details needed in the next phase." }),
+    backupCheckpoint: Type.Optional(Type.String({ description: "Optional checkpoint name to label the current conversation state before branching. This is only a recovery pointer; the summary must still contain the state needed to continue." })),
 });
 
+const ContextCheckpointDescription = "Create a named anchor by labeling a conversation history node. This does not branch, summarize, or affect external state; it only makes the point easy to find later in timeline or compact target selection.";
 const ContextCheckpointParams = Type.Object({
-    name: Type.String({ description: "The checkpoint or milestone name. Use meaningful names." }),
-    target: Type.Optional(Type.String({ description: "Optional history node ID or checkpoint name to label. Defaults to the current conversation position." })),
+    name: Type.String({ description: "Unique semantic anchor name that encodes the task and phase/purpose, e.g. parser-fix-start or timeout-investigation-search. Avoid generic names like start, checkpoint-1, or retry." }),
+    target: Type.Optional(Type.String({ description: "Optional history node ID or checkpoint name to label. Defaults to the current meaningful position near the conversation head." })),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -105,7 +108,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
         name: "context_checkpoint",
         label: "Context Checkpoint",
-        description: "Create a named checkpoint in the conversation history. Use this before risky work, before a long research pass, or whenever you reach a stable milestone. A checkpoint is an anchor: after the noisy phase produces a stable result and work remains, prefer context_compact back to this anchor with a handoff summary before continuing.",
+        description: ContextCheckpointDescription,
         parameters: ContextCheckpointParams,
         async execute(_id, params: Static<typeof ContextCheckpointParams>, _signal, _onUpdate, ctx) {
             const sm = ctx.sessionManager as SessionManager;
@@ -173,7 +176,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
         name: "context_timeline",
         label: "Context Timeline",
-        description: "Show the conversation timeline, checkpoints, summaries, and current position. Use this to understand session structure, monitor drift, and choose a checkpoint to return to.",
+        description: ContextTimelineDescription,
         parameters: ContextTimelineParams,
         async execute(_id, params: Static<typeof ContextTimelineParams>, _signal, _onUpdate, ctx) {
             const sm = ctx.sessionManager as SessionManager;
@@ -385,7 +388,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
         name: "context_compact",
         label: "Context Compact",
-        description: "Compact the current noisy conversation path into a handoff summary and continue from an earlier checkpoint or history node. Use proactively at phase boundaries: after a noisy investigation finds stable facts and before the next phase (export, implementation, validation, next item, or new task). This changes conversation history only and does not modify disk files. Always provide a detailed handoff summary with result, evidence/source anchors, decisions, important changes, open questions, and next step when relevant.",
+        description: ContextCompactDescription,
         parameters: ContextCompactParams,
         async execute(_id, params: Static<typeof ContextCompactParams>, _signal, _onUpdate, ctx) {
             if (!CommandCtx) {

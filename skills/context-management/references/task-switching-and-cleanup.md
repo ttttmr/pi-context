@@ -24,7 +24,7 @@ Use when the thread is already stale or messy and you want to compress it now, e
 ## Working pattern
 
 1. Inspect timeline if anchor choice is unclear.
-2. Before switching away or compacting a noisy path, preserve the best clean anchor.
+2. Before switching away or compacting a noisy path, preserve or choose the anchor that will give the resumed/new task a clean working set.
 3. If needed, create a backup checkpoint for the current noisy branch.
 4. If the user has just started a new task after a completed noisy task, compact before doing the new task so the completed task becomes a compact summary rather than active baggage.
 5. Handle the side task or cleanup move.
@@ -45,7 +45,7 @@ Run `context_timeline` when:
 - multiple interruptions happened
 - the pause lasted many turns
 - several side-task branches now exist
-- you are unsure which clean anchor should be resumed
+- you are unsure which anchor gives the resumed/new task the right working set
 - the thread is already messy and you need to find the right pre-noise checkpoint
 
 ## When to compact
@@ -58,7 +58,7 @@ Compact when:
 - the useful state is now much smaller than the accumulated process
 - you can express the handoff clearly in a summary
 
-Do not compact at the instant you finish a user-visible task if there is no known continuation. In that moment, deliver the answer and wait. If the next user message starts a new task, that is the right time to compact the completed task before proceeding. If the interruption was tiny and clean, a compact may be unnecessary. A checkpoint before switching away is still the key move.
+Do not compact at the instant you finish a user-visible task if there is no known continuation. In that moment, deliver the answer and wait. If the next user message starts a new task, that is the right time to compact the completed task before proceeding. If the completed task changed files, browser state, tickets, or remote services, include those side effects in the handoff summary because the context move does not undo them. If the interruption was tiny and clean, a compact may be unnecessary. A checkpoint before switching away is still the key move.
 
 ## Common mistakes
 
@@ -68,4 +68,5 @@ Avoid:
 - starting a new, unrelated user task while still carrying the previous task's full raw path
 - returning to the main line while still carrying the side task's full raw path
 - trying to clean up without first checking timeline when anchor choice is unclear
-- over-resetting and losing still-valid near-term context
+- resetting past still-valid near-term context without carrying it in the summary
+- forgetting that files and external systems remain in their latest state after context navigation

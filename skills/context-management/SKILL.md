@@ -1,21 +1,40 @@
 ---
 name: context-management
-description: Use this skill for work likely to span many turns, branches, retries, noisy research, reading several links/webpages, plan-then-execute phases, repeated cases, debugging, or interrupted/messy threads. It teaches explicit history management with checkpoints, timeline review when orientation matters, and compaction only at clean continuation boundaries. Usually skip for one-shot reads, bounded summaries, direct rewrites, simple lookups, or deterministic scripts.
+description: Use this skill for work likely to span many turns, branches, retries, research, reading several files/webpages, plan-then-execute phases, repeated cases, debugging, or interrupted/messy threads. It guides agents to maintain a clean working set with checkpoints, timeline review, and compaction at useful continuation boundaries. Usually skip for one-shot reads, bounded summaries, direct rewrites, simple lookups, or deterministic scripts.
 ---
 
 # Context Management
 
-Use this skill to keep long or messy work navigable. The core rhythm is:
+Use this skill to maintain the active conversation as a useful **working set** for the next step. The goal is not to archive more history or compress more aggressively; it is to keep raw only the context that still needs direct reasoning, and carry the rest as compact task state when that is more efficient.
+
+Core rhythm:
 
 - **checkpoint before mess**
-- **review timeline when orientation matters**
-- **compact only when a phase is ready and another phase benefits from cleanup**
+- **review timeline when structure affects the next decision**
+- **compact when a state summary is a better working set than the raw trail**
 
 Use only these tools:
 
 - `context_checkpoint`
 - `context_timeline`
 - `context_compact`
+
+## Working-set model
+
+Before choosing a tool, ask:
+
+- What am I trying to do next?
+- What facts, constraints, or artifacts must stay raw for that next action?
+- What history is useful only as a conclusion or state update?
+- What history is just process noise or stale baggage?
+
+Classify context into three forms:
+
+- **Raw context:** user intent, constraints, code/log/error details, evidence, or plan text that you expect to inspect directly soon.
+- **State summary:** decisions, findings, lessons, changed files, validation status, rejected leads, and next steps that can replace raw process.
+- **Discardable process:** repetitive searches, verbose logs, abandoned hypotheses, false starts, and unrelated turns whose useful value is already captured or no longer needed.
+
+If the active context is already small, coherent, and directly useful for the next step, do not manage it just to be tidy.
 
 ## When to use
 
@@ -33,7 +52,7 @@ Use this mode when the user is asking for work that may outgrow one clean thread
 
 If one of these clearly applies, take a structural action now, usually a checkpoint. Do not merely describe the workflow. If the user has not yet provided enough task details, still create a checkpoint for the workflow shape before asking clarifying questions, and name the detected mode briefly (search/reading, planning, repeated batch, task switching/cleanup, development retry).
 
-Usually skip this skill for one-shot reads, bounded summaries, direct rewrites, simple fact lookup, conceptual explanation, deterministic scripts, or short tasks that can stay clean.
+Usually skip this skill for one-shot reads, bounded summaries, direct rewrites, simple fact lookup, conceptual explanation, deterministic scripts, short tasks that can stay clean, or moments where the active context is already a good working set.
 
 ## Start-of-turn check
 
@@ -41,29 +60,32 @@ At the start of each new user message, classify it:
 
 - **Same task / next phase**: continue; if the previous phase is complete and noisy, compact before the next phase.
 - **Correction or follow-up on the last answer**: usually answer from recent context; do not compact yet.
-- **New unrelated task**: if the previous task left a complete noisy segment, compact it to a clean anchor before starting the new task.
+- **New unrelated task or direction shift**: if the previous task left a complete noisy segment, inspect the timeline first when multiple checkpoints or possible anchors exist, then compact to a continuation anchor that gives the new task a clean working set.
 
-This prevents both premature cleanup after final answers and endless checkpoint-only behavior across real task switches.
+Think of the tools as a phase pipeline: `context_checkpoint` marks useful anchors, work happens, `context_timeline` shows the structure when orientation or target choice is unclear, and `context_compact` creates a new branch from the chosen continuation anchor with a summary of what happened after it. The target is a working-set choice, not an age choice: keep raw context only when it will help the next action; summarize or drop raw process when it would distract.
+
+This prevents both premature cleanup after final answers and endless checkpoint-only behavior that lets stale work accumulate.
 
 ## Main loop
 
-1. Before noisy work, create a semantic checkpoint, even if the next visible step is asking for missing inputs.
-2. When the task shape is clear, read the one matching scenario reference in the same turn; do not stop after checkpoint-only unless the prompt is intentionally lightweight.
-3. If you feel lost, the thread has branches, or the compact target is unclear, use `context_timeline`.
-4. Add checkpoints at milestones, phase boundaries, risky attempts, and interruptions.
-5. Compact only when a completed or failed phase has a stable takeaway and there is an immediate continuation that benefits from a shorter context.
-6. If the whole requested task is complete and your only remaining action is the final response, answer and wait. Let the next user message determine whether cleanup is useful.
-7. After a successful compact, continue from the injected summary instead of dragging the full raw path forward.
+1. Before noisy work, create a semantic checkpoint as the first context-management action, even if the next visible step is asking for missing inputs. If the first job is orientation over existing history, run `context_timeline` before adding a new checkpoint.
+2. When the task shape is clear, read one matching scenario reference only if it will change tool timing, anchor choice, or summary content. Skip reference loading for obvious short applications where this main skill body is enough. Do not stop after checkpoint-only unless the prompt is intentionally lightweight.
+3. Add checkpoints at meaningful milestones: phase boundaries, risky attempts, reusable batch methods, and interruptions.
+4. Use `context_timeline` when the active path structure affects the next decision or compact target.
+5. At phase boundaries, run the compact gate before starting another phase. If the whole requested task is complete and only the final response remains, answer and wait; let the next user message determine whether cleanup is useful.
+6. After a successful compact, continue from the injected summary instead of dragging the full raw path forward.
 
-### Phase-boundary reflex
+## Read the right reference
 
-After any checkpointed noisy phase, pause before the next tool call or next phase:
+Read **one primary reference** based on task shape when the scenario pattern will affect tool timing, anchor choice, or summary content:
 
-- Did this phase produce a stable result, lesson, or failure reason?
-- Is the next action a new phase rather than the final answer?
-- Would that next phase work from a compact summary instead of the full raw trail?
+- search / research / reading-heavy work, especially web search, browser operation, or low-density webpages -> `references/search-research-and-reading.md`
+- development / debugging / troubleshooting / refactoring / migration -> `references/development-and-troubleshooting.md`
+- planning / staged execution / todo-driven work -> `references/planning-and-execution.md`
+- repeated similar items / batch work -> `references/repeated-items-and-batch-work.md`
+- task switching / pause-resume / interruptions to a mainline task / scattered-thread cleanup-and-continue -> `references/task-switching-and-cleanup.md`
 
-If yes, compact now instead of creating another checkpoint and dragging the raw path forward.
+Also read `references/retry-branch-and-pivot.md` when multiple approaches, failed branches, comparisons, retries, or pivots become central. For code/debugging work with repeated attempts, use both `references/development-and-troubleshooting.md` and `references/retry-branch-and-pivot.md`.
 
 ## Tool policy
 
@@ -84,49 +106,37 @@ Avoid generic names like `start`, `checkpoint-1`, `phase-1`, or `retry`.
 
 ### `context_timeline`
 
-Use it to regain orientation:
+Use it as the structural view of the active path, not only as a rescue tool:
 
-- when you feel disoriented or drifted
-- when several checkpoints or branches exist
-- before choosing a compact target
-- when the thread feels cluttered and you need a structural map
+- when the current path shape affects the next decision
+- when several checkpoints, branches, or task switches exist
+- before choosing a compact target that is not obvious
+- when the thread feels cluttered and you need to distinguish useful context from baggage
 
 When reading the timeline, ask:
 
-- Where is the nearest clean anchor?
-- Has the current segment grown too long without a checkpoint?
-- Am I carrying a failed or stale branch forward?
-- Is there a better checkpoint to compact to?
+- What is the current task and immediate next action?
+- Which prior raw messages are still needed for that next action?
+- Which completed, failed, or unrelated paths are now baggage?
+- Which anchor gives the smallest sufficient working set after summary injection?
 
 ### `context_compact`
 
-Use it to leave behind raw history that is no longer worth carrying in full.
+Use it to replace raw history with a state summary when the next phase would benefit from a smaller working set.
 
-Good times to compact:
+Typical compact boundaries: investigation -> execution, diagnosis -> fix, implementation -> validation, failed attempt -> next attempt, representative item -> remaining batch, completed noisy task -> new user task.
 
-- a noisy investigation reached a stable finding and the same task has another phase
-- a failed path produced a clear lesson and you are about to try another path
-- a completed phase is ready for validation, implementation, export, or the next item
-- a representative repeated item taught the reusable method
-- a new user task begins after a completed noisy previous task
-
-Do **not** compact:
-
-- while exploration is still active
-- when the result is unstable or incomplete
-- just because the skill triggered
-- just because the user-visible task ended
-- when you do not know which earlier clean anchor to continue from
-
-A same-request phase transition is often the right time to compact: investigation -> execution, search -> export, diagnosis -> fix, representative item -> remaining batch.
+Do not compact while exploration is still active, when the result is unstable, just because the skill triggered, or just because the user-visible task ended.
 
 ## Compact gate
 
 Before calling `context_compact`, require all three:
 
-1. The segment being left behind is noisy, stale, failed, or low-value in raw form.
-2. You can summarize the useful result, lesson, or state clearly.
+1. The segment being left behind is noisy, stale, failed, low-value in raw form, or actively reducing focus.
+2. You can restore the useful task state in a clear summary.
 3. There is an immediate continuation that benefits from cleaner context.
+
+If the compact is prompted by a new user message, a direction shift, or several possible checkpoint targets, run `context_timeline` first and choose the target from the visible structure rather than from memory.
 
 Condition 3 means the next action is a new phase, not just more of the same exploration. Examples: run the export, implement the fix, validate, process the next item, or try the chosen next approach.
 
@@ -134,61 +144,61 @@ If conditions 1 and 2 are true but the whole task is done and only the final ans
 
 ## Choosing target and backup
 
-Choose the best earlier **clean anchor**, not just any checkpoint.
+Choose the continuation anchor by designing the next working set:
 
-Prefer:
+1. Name the immediate next action.
+2. Decide what must remain raw: active user intent, current constraints, still-open evidence or code context, an approved plan being executed, or details you expect to inspect directly next.
+3. Decide what can become state summary or disappear: completed searches, verbose logs, failed attempts, stale branches, earlier unrelated tasks, and process details whose useful value is already clear.
+4. Pick the anchor that leaves the new branch with the **smallest sufficient context** after summary injection.
+5. If an older anchor plus a stronger summary is cleaner than a recent anchor plus stale context, prefer the older anchor.
 
-- the start of the noisy phase being compacted
-- the nearest clean phase-start before the current failed or completed path
-- the repeated-work anchor for batch workflows
-- the last stable pre-branch checkpoint when abandoning an approach
+The right target may be a recent phase-start, a plan-ready checkpoint, a pre-branch checkpoint, a repeated-work baseline, an older checkpoint, or `root`. `root` is appropriate when the old path no longer contributes raw context and the summary can carry the necessary state.
 
-Avoid compacting too far back, compacting to an anchor that already includes the noise, or defaulting to `root` unless the whole active path should reset. If you are unsure which anchor is best, run `context_timeline` first.
+Avoid targets that create a poor working set:
+
+- too late: the new branch still contains the clutter, failed path, or unrelated task you meant to leave behind
+- too early with a weak summary: the next phase loses constraints, decisions, evidence, or changed-file state it needs
+- semantically wrong: the anchor preserves a context frame that no longer matches the current task
+
+For bounded phases, choose by what should remain raw:
+
+- target `research-start` to summarize the whole research segment
+- target `research-end` to keep research raw and summarize only later clutter before follow-up research
+
+If there are several checkpoints, a task switch, or any uncertainty about the best working set, run `context_timeline` first.
 
 Use `backupCheckpoint` when the raw path may still matter later: long investigations, abandoned branches, risky compactions, or details that may be needed for recovery. A backup checkpoint is a recovery safety net, not a substitute for the summary; include details likely needed in the next phase because returning to backup is costly.
 
-## Compact summary requirements
+## Compact summary contract
 
-The summary is the handoff to future-you. It must preserve the compressed working set, not just the headline.
+The summary is not a transcript recap. It is the state needed to resume work from the chosen anchor; older or cleaner anchors require stronger summaries.
 
-Always include:
+Context tools change conversation state, not the outside world. Files, processes, browser state, tickets, databases, remote services, and other side effects stay current. If you compact to an anchor before those changes, the summary must bridge the gap between old conversation context and current external state.
 
-- stable result, lesson, or failure reason
-- why compacting is appropriate now
-- important changes, especially changed files if disk state changed
-- explicit next step
+A compact summary must restore:
 
-For search/research/reading-heavy work, also include likely-needed details:
+1. **Task state:** current task, user intent, constraints, decisions, assumptions, and known result/progress/failure.
+2. **External state:** changed files, created/deleted artifacts, running/stopped processes, browser actions, tickets/records, deployments, remote changes.
+3. **Verification state:** commands already run, validation status, notable outputs, and remaining risks or open questions.
+4. **Navigation state:** source anchors/evidence when needed, rejected leads worth avoiding, backup checkpoint guidance, and the explicit next step.
 
-- source anchors: files, URLs, session IDs, commands, queries, docs, records
-- evidence: key facts, numbers, errors, IDs, or observations supporting the conclusion
-- decisions and assumptions
-- rejected leads that would be costly to repeat
-- open questions or risks
-- backup checkpoint name and when to use it
-
-Useful shapes:
-
-- `[result] + [why compact] + [next step]`
-- `[result] + [evidence/source anchors] + [next step]`
-- `[failure reason] + [lesson] + [next attempt]`
-- `[changes] + [validation next step] + [backup pointer]`
+Include why compacting is appropriate only when it helps future orientation. Avoid vague summaries like `Done`, `Investigated`, `Switching context`, or `Going back`.
 
 Good examples:
 
-- `Found DB pool exhaustion as likely root cause. Evidence: logs show pool wait timeouts during peak traffic; config has pool size 10; no network errors found. Reason: investigation is complete and ready for mitigation planning. Next step: propose fixes and validation.`
-- `Parser fix is implemented. Important changes: src/parser.ts and test/parser.test.ts. Reason: compacting noisy implementation history before focused validation. Next step: run targeted tests and summarize remaining edge cases.`
+- `Current task: plan mitigation for API timeouts. State: DB pool exhaustion is the likely root cause. Evidence: logs show pool wait timeouts during peak traffic; config has pool size 10; no network errors found. Rejected lead: API gateway timeout appears downstream of DB waits. Next step: propose mitigation and validation steps.`
+- `Current task: validate the parser fix. State: implementation is done. External state: changed files src/parser.ts and test/parser.test.ts. Validation not yet run after the final edit. Next step: run targeted parser tests and summarize remaining edge cases. Backup: parser-fix-debug-history if exact failed attempts are needed.`
 
-Before compacting, quickly check: stable result? real continuation? right anchor? changed files captured? explicit next step?
-
-Avoid vague summaries like `Done`, `Investigated`, `Switching context`, or `Going back`.
+Before compacting, quickly check: stable state? real continuation? anchor gives the smallest sufficient working set? summary restores state after that anchor? external side effects and validation captured? explicit next step?
 
 ## After compact
 
 1. Read the injected summary carefully.
 2. Treat it as the new active state.
-3. Execute the next step from that summary.
-4. Return to the backup checkpoint only if the summary is insufficient.
+3. Before continuing, verify it contains enough state for the next action.
+4. Remember that disk and external systems were not rolled back by the context move; if state matters, inspect the current files/tools/services rather than trusting the historical anchor.
+5. If a missing detail is cheap to reconstruct from disk, tools, or source anchors, retrieve it directly.
+6. Return to the backup checkpoint only when the missing raw context cannot be reconstructed cheaply.
 
 ## Common mistakes
 
@@ -196,18 +206,10 @@ Avoid:
 
 - checkpointing constantly without phase meaning
 - compacting blindly without timeline when anchor choice is unclear
+- preserving too much raw history because older anchors or `root` feel risky
+- using an old anchor or `root` with a weak summary that drops current task state
 - compacting immediately after a final deliverable when no next user intent is known
 - carrying completed noisy phases into a new task
-- writing summaries that omit evidence, decisions, changed files, or next step
-
-## Read the right reference
-
-Read **one primary reference** based on task shape whenever this skill is actively used and the shape is clear:
-
-- search / research / reading-heavy work, especially web search, browser operation, or low-density webpages -> `references/search-research-and-reading.md`
-- development / debugging / troubleshooting / refactoring / migration -> `references/development-and-troubleshooting.md`
-- planning / staged execution / todo-driven work -> `references/planning-and-execution.md`
-- repeated similar items / batch work -> `references/repeated-items-and-batch-work.md`
-- task switching / pause-resume / interruptions to a mainline task / scattered-thread cleanup-and-continue -> `references/task-switching-and-cleanup.md`
-
-Also read `references/retry-branch-and-pivot.md` when multiple approaches, failed branches, comparisons, retries, or pivots become central. For code/debugging work with repeated attempts, use both `references/development-and-troubleshooting.md` and `references/retry-branch-and-pivot.md`.
+- writing summaries that recap history but fail to restore current task state
+- assuming compact or branch navigation reverts files, processes, browser state, or remote services
+- omitting decisions, constraints, external side effects, changed files, validation status, or next step

@@ -17,7 +17,7 @@ Use this reference when the items are similar enough that the same method should
 4. Compact after each completed item or completed mini-phase when another item remains and the raw path is no longer worth carrying forward.
 5. Use timeline occasionally to verify that the history still has a clean structure.
 
-For repeated-item work, the default between-item move is not "keep carrying the last item's raw reasoning". Once an item is done, its takeaway is stable, and another item remains, compact back to the repeated-work anchor. If the last item completes the whole user request, deliver the final answer and wait for the next user message before deciding whether to compact.
+For repeated-item work, the default between-item move is not "keep carrying the last item's raw reasoning". Once an item is done, its takeaway is stable, and another item remains, compact to the repeated-work anchor or other baseline that preserves the reusable method without item-specific noise. If the last item completes the whole user request, deliver the final answer and wait for the next user message before deciding whether to compact.
 
 ## Useful anchors
 
@@ -56,7 +56,7 @@ context_checkpoint({ name: "vendor-review-method-clear" });
 
 context_compact({
   target: "vendor-review-method-clear",
-  summary: "One more vendor review completed. Reason: compacting finished item work and returning to the clean repeated-item anchor. Next step: process the next vendor using the same method.",
+  summary: "Current task: continue the vendor review batch. State: one more vendor review is complete; item-specific reasoning no longer needs to stay raw. Reusable method remains the active baseline. Next step: process the next vendor using the same method.",
   backupCheckpoint: "vendor-review-item-7-history"
 });
 ```

@@ -1,6 +1,6 @@
 # Pi Context: Agentic Context Management for Pi
 
-An Agentic Context Management tool that helps AI agents proactively structure, inspect, and clean up conversation history using checkpoints, timeline inspection, and checkpoint-based compaction.
+An Agentic Context Management tool that helps AI agents keep long conversations focused by maintaining a clean working set: checkpoint useful anchors, inspect the active history structure, and compact noisy completed paths into state summaries.
 
 Inspired by kimi-cli d-mail, it brings lossless time travel to Pi's session tree.
 
@@ -15,7 +15,7 @@ Current versions intentionally use conversation-native names instead:
 - `context_timeline`
 - `context_compact`
 
-These tools manage **conversation history**, not repository state. They should not be treated as Git commands or as replacements for real `git tag`, `git log`, or `git checkout`.
+These tools manage **conversation history**, not repository state. They should not be treated as Git commands or as replacements for real `git tag`, `git log`, or `git checkout`. Context navigation does not modify or roll back files, running processes, browser state, tickets, databases, or remote services.
 
 ## Installation
 
@@ -43,13 +43,13 @@ Open a visual dashboard to inspect context-window usage and token distribution (
 
 ### For Agents
 
-This extension adds the `context-management` skill, which includes three core tools:
+This extension adds the `context-management` skill, which guides agents to keep the active conversation as the smallest sufficient working set for the next step. It includes three core tools:
 
-1. **🔖 Structure (`context_checkpoint`)**
-   Create named checkpoints to organize conversation history.
+1. **🔖 Anchor (`context_checkpoint`)**
+   Label a meaningful conversation node with a unique semantic checkpoint name, such as `parser-fix-start` or `timeout-investigation-search`.
 
-2. **📊 Monitor (`context_timeline`)**
-   Visualize conversation history, inspect token usage, and see where you are in the task tree.
+2. **📊 Inspect (`context_timeline`)**
+   View the active path as a structural map of checkpoints, summaries/compactions, branch points, user turns, and current position. Use it when orientation or compact target selection depends on history shape.
 
 3. **⏪ Compact (`context_compact`)**
-   Compact a completed noisy path into a handoff summary and continue from an earlier checkpoint or anchor.
+   Create a summarized continuation branch from an earlier checkpoint, history node, or `root`. The summary should restore the useful state after the target: current task, decisions, external side effects such as changed files or remote updates, validation state, source anchors, and the explicit next step.
