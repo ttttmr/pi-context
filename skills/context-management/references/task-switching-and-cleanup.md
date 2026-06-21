@@ -27,9 +27,10 @@ Use when the thread is already stale or messy and you want to compress it now, e
 2. Before switching away or compacting a noisy path, preserve or choose the anchor that will give the resumed/new task a clean working set.
 3. If needed, create a backup checkpoint for the current noisy branch.
 4. If the user has just started a new task after a completed noisy task, compact before doing the new task so the completed task becomes a compact summary rather than active baggage.
-5. Handle the side task or cleanup move.
-6. Compact away the stale path when the handoff summary is clear.
-7. Resume from the paused anchor or continue from the compacted state.
+5. If the user asks a concrete side question while noisy mainline work is active, pause or summarize the active work, compact if the raw mainline history is no longer needed for the side question, answer the side question, and preserve how to resume the paused work.
+6. Handle the side task or cleanup move.
+7. Compact away the stale path when the handoff summary is clear.
+8. Resume from the paused anchor or continue from the compacted state.
 
 ## Useful anchors
 

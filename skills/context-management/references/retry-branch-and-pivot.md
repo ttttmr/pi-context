@@ -33,6 +33,14 @@ Compact when:
 - the direction changed enough that the old path is now baggage
 - the next attempt should start from a focused state rather than the raw failed branch
 
+When compacting after an abandoned branch, preserve:
+
+- what was tried
+- why it failed or was rejected
+- what should not be repeated
+- what remains valid
+- the chosen next approach
+
 ## Strategy pivot
 
 Use this pattern when the old direction no longer makes sense even though the task is still continuing.
@@ -56,7 +64,7 @@ context_checkpoint({ name: "oauth-fix-start" });
 
 context_compact({
   target: "oauth-fix-start",
-  summary: "Current task: continue the OAuth fix with a new approach. State: cookie-based approach is not viable because the callback flow loses session continuity. Decision: switch to signed state tokens. Next step: implement the signed-state approach.",
+  summary: "Current task: continue the OAuth fix with a new approach. State: cookie-based approach is not viable because the callback flow loses session continuity. Rejected path: do not repeat cookie-based continuity for this flow. Still valid: callback validation and provider config findings. Decision: switch to signed state tokens. Next step: implement the signed-state approach.",
   backupCheckpoint: "oauth-cookie-approach-history"
 });
 context_checkpoint({ name: "oauth-signed-state-start" });
@@ -67,5 +75,6 @@ context_checkpoint({ name: "oauth-signed-state-start" });
 Avoid:
 - opening alternative branches without a clean checkpoint first
 - dragging failed branches forward after their lesson is already clear
+- omitting the rejected path, failure reason, or chosen replacement from the compact summary
 - compacting to a point that still includes the branch you meant to abandon
 - treating every branch as equally worth preserving
