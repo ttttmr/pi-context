@@ -1,6 +1,6 @@
 ---
 name: context-management
-description: Use this skill for multi-turn, phased, or noisy work: research/reading, debugging, plan-then-execute, retries/pivots, background or asynchronous work, handoffs, user decisions, task switching, repeated items, or repeated progress checks. It keeps the conversation as a clean working set with checkpoints, timeline review, and compaction at continuation boundaries. Always use when resuming after context compaction or when a long phase reaches a decision, handoff, validation, or task-switch boundary. Usually skip simple one-shot tasks.
+description: "Use this skill for multi-turn, phased, or noisy work: research/reading, debugging, plan-then-execute, retries/pivots, background or asynchronous work, handoffs, user decisions, task switching, repeated items, or repeated progress checks. It keeps the conversation as a clean working set with checkpoints, timeline review, and compaction at continuation boundaries. Always use when resuming after context compaction or when a long phase reaches a decision, handoff, validation, or task-switch boundary. Usually skip simple one-shot tasks."
 ---
 
 # Context Management
