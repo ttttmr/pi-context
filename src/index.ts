@@ -22,6 +22,8 @@ interface SessionTreeNode {
 }
 
 const InternalTools = ["context_checkpoint", "context_timeline", "context_compact"];
+const PiContextCustomMessageType = "pi-context";
+const AcmEnableFollowUp = "Agentic context management is now enabled";
 let CommandCtx: ExtensionCommandContext | null = null;
 let CompactParams: any = null;
 
@@ -392,7 +394,11 @@ export default function (pi: ExtensionAPI) {
         parameters: ContextCompactParams,
         async execute(_id, params: Static<typeof ContextCompactParams>, _signal, _onUpdate, ctx) {
             if (!CommandCtx) {
-                ctx.ui.setEditorText(`/acm ${ctx.ui.getEditorText() || "continue"}`)
+                const editorText = ctx.ui.getEditorText();
+                const followUp = editorText
+                    ? `${AcmEnableFollowUp}\n${editorText}`
+                    : AcmEnableFollowUp;
+                ctx.ui.setEditorText(`/acm ${followUp}`)
                 return {
                     content: [{
                         type: "text",
@@ -469,7 +475,7 @@ export default function (pi: ExtensionAPI) {
                 ].join("\n"), "info");
 
                 pi.sendMessage({
-                    customType: "pi-context",
+                    customType: PiContextCustomMessageType,
                     content: "context_compact complete. A handoff summary of your previous conversation path was injected above. Read it to understand your new state. Execute the Next Step from the summary",
                     display: false,
                 }, {
