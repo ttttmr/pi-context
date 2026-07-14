@@ -1,6 +1,6 @@
 {
   "name": "pi-context",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Agentic Context Management for Pi",
   "files": [
     "src",
@@ -15,18 +15,19 @@
     "pi-package",
     "context-management",
     "context-optimization",
+    "context-compact",
     "time-travel",
     "checkpoint",
     "pi-skill"
   ],
   "type": "module",
-  "author": "",
+  "author": "ttttmr",
   "license": "MIT",
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.75.4",
-    "@earendil-works/pi-coding-agent": "^0.75.4",
-    "@earendil-works/pi-tui": "^0.75.4",
-    "typescript": "^5.7.2"
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-tui": "^0.80.6",
+    "typescript": "^5.9.3"
   },
   "pi": {
     "extensions": [
