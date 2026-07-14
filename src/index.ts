@@ -424,9 +424,7 @@ export default function (pi: ExtensionAPI) {
 
             const enrichedMessage = `(handoff summary from ${origin})\n${params.summary}`;
 
-            const nid = await sm.branchWithSummary(tid, enrichedMessage);
             CompactParams = params;
-            CompactParams.nid = nid;
             CompactParams.tid = tid;
             CompactParams.enrichedMessage = enrichedMessage;
             CompactParams.usageBeforeText = usageBeforeText;
@@ -442,7 +440,7 @@ export default function (pi: ExtensionAPI) {
         ctx.abort()
     });
 
-    pi.on("agent_end", async () => {
+    pi.on("agent_end", async (_event, ctx) => {
         if (!CompactParams) {
             return
         }
@@ -450,6 +448,7 @@ export default function (pi: ExtensionAPI) {
             return
         }
 
+        const sm = ctx.sessionManager as SessionManager;
         const compactParams = CompactParams;
         const commandCtx = CommandCtx;
         CompactParams = null;
@@ -462,6 +461,12 @@ export default function (pi: ExtensionAPI) {
         setTimeout(async () => {
             try {
                 await commandCtx.waitForIdle();
+                const nid = sm.branchWithSummary(compactParams.tid, compactParams.enrichedMessage);
+                compactParams.nid = nid;
+                // branchWithSummary advances the leaf to the summary entry. Reset
+                // it so navigateTree(nid) can rebuild agent state instead of
+                // returning early as a no-op.
+                sm.branch(compactParams.tid);
                 await commandCtx.navigateTree(compactParams.nid, {
                     summarize: false,
                 });
