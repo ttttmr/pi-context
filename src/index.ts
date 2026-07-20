@@ -452,6 +452,7 @@ export default function (pi: ExtensionAPI) {
         const compactParams = CompactParams;
         const commandCtx = CommandCtx;
         CompactParams = null;
+        const compactTurnLeaf = sm.getLeafId();
 
         // `agent_end` is emitted before the core Agent is actually idle. If we
         // call pi.sendMessage({ triggerTurn: true }) inside this handler, pi still
@@ -461,6 +462,24 @@ export default function (pi: ExtensionAPI) {
         setTimeout(async () => {
             try {
                 await commandCtx.waitForIdle();
+
+                const currentLeaf = sm.getLeafId();
+                if (currentLeaf !== compactTurnLeaf) {
+                    commandCtx.ui.notify("context_compact cancelled: conversation advanced before compaction completed.", "warning");
+                    pi.sendMessage({
+                        customType: PiContextCustomMessageType,
+                        content: [
+                            "context_compact cancelled: conversation advanced before the summary branch was created.",
+                            "No compaction was applied; continue from the current path. If still useful, inspect timeline and retry with an updated summary.",
+                        ].join("\n"),
+                        display: false,
+                    }, {
+                        triggerTurn: true,
+                        deliverAs: "followUp",
+                    });
+                    return;
+                }
+
                 const nid = sm.branchWithSummary(compactParams.tid, compactParams.enrichedMessage);
                 compactParams.nid = nid;
                 // branchWithSummary advances the leaf to the summary entry. Reset
@@ -488,7 +507,19 @@ export default function (pi: ExtensionAPI) {
                     deliverAs: "followUp",
                 });
             } catch (err) {
-                commandCtx.ui.notify(`context_compact failed to continue: ${err instanceof Error ? err.message : String(err)}`, "error");
+                const message = err instanceof Error ? err.message : String(err);
+                commandCtx.ui.notify(`context_compact failed: ${message}`, "error");
+                pi.sendMessage({
+                    customType: PiContextCustomMessageType,
+                    content: [
+                        `context_compact failed: ${message}`,
+                        "No compaction was applied; continue from the current path. Retry only with a fresh timeline/summary.",
+                    ].join("\n"),
+                    display: false,
+                }, {
+                    triggerTurn: true,
+                    deliverAs: "followUp",
+                });
             }
         }, 0);
     });
