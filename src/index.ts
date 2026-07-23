@@ -12,6 +12,7 @@ import {
     type ImageContent,
     type ToolCall,
 } from "@earendil-works/pi-ai";
+import { didConversationAdvance } from "./compaction-advance.js";
 import { formatTokens } from "./utils.js";
 
 // Define missing types locally as they are not exported from the main entry point
@@ -463,8 +464,8 @@ export default function (pi: ExtensionAPI) {
             try {
                 await commandCtx.waitForIdle();
 
-                const currentLeaf = sm.getLeafId();
-                if (currentLeaf !== compactTurnLeaf) {
+                const branch = sm.getBranch();
+                if (didConversationAdvance(branch, compactTurnLeaf)) {
                     commandCtx.ui.notify("context_compact cancelled: conversation advanced before compaction completed.", "warning");
                     pi.sendMessage({
                         customType: PiContextCustomMessageType,
