@@ -8,7 +8,8 @@
     "README.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && rm -rf dist && tsc --declaration false && node --test test/*.test.mjs"
   },
   "keywords": [
     "pi-agent",

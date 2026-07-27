@@ -38,6 +38,33 @@ const formatContextUsage = (usage: ContextUsage | undefined, includeTokens = fal
     return `${percent} (${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)})`;
 };
 
+const PassiveCompactionEntryTypes = new Set<SessionEntry["type"]>([
+    "custom",
+    "label",
+    "session_info",
+    "model_change",
+    "thinking_level_change",
+]);
+
+/**
+ * Detect whether session activity after the compact turn should cancel the
+ * requested compaction. Non-contextual session state is ignored; entries that
+ * participate in model context, plus unknown future behavior, fail closed.
+ */
+export const didConversationAdvance = (
+    branch: readonly SessionEntry[],
+    compactTurnLeaf: string | null,
+): boolean => {
+    if (!compactTurnLeaf) return true;
+
+    const compactTurnIndex = branch.findIndex((entry) => entry.id === compactTurnLeaf);
+    if (compactTurnIndex === -1) return true;
+
+    return branch
+        .slice(compactTurnIndex + 1)
+        .some((entry) => !PassiveCompactionEntryTypes.has(entry.type));
+};
+
 const resolveTargetId = (sm: SessionManager, target: string): string => {
     if (target.toLowerCase() === "root") {
         const tree = sm.getTree();
@@ -463,8 +490,8 @@ export default function (pi: ExtensionAPI) {
             try {
                 await commandCtx.waitForIdle();
 
-                const currentLeaf = sm.getLeafId();
-                if (currentLeaf !== compactTurnLeaf) {
+                const branch = sm.getBranch();
+                if (didConversationAdvance(branch, compactTurnLeaf)) {
                     commandCtx.ui.notify("context_compact cancelled: conversation advanced before compaction completed.", "warning");
                     pi.sendMessage({
                         customType: PiContextCustomMessageType,
