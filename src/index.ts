@@ -12,7 +12,6 @@ import {
     type ImageContent,
     type ToolCall,
 } from "@earendil-works/pi-ai";
-import { didConversationAdvance } from "./compaction-advance.js";
 import { formatTokens } from "./utils.js";
 
 // Define missing types locally as they are not exported from the main entry point
@@ -37,6 +36,33 @@ const formatContextUsage = (usage: ContextUsage | undefined, includeTokens = fal
     if (!includeTokens || usage.tokens == null) return percent;
 
     return `${percent} (${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)})`;
+};
+
+const PassiveCompactionEntryTypes = new Set<SessionEntry["type"]>([
+    "custom",
+    "label",
+    "session_info",
+    "model_change",
+    "thinking_level_change",
+]);
+
+/**
+ * Detect whether session activity after the compact turn should cancel the
+ * requested compaction. Non-contextual session state is ignored; entries that
+ * participate in model context, plus unknown future behavior, fail closed.
+ */
+export const didConversationAdvance = (
+    branch: readonly SessionEntry[],
+    compactTurnLeaf: string | null,
+): boolean => {
+    if (!compactTurnLeaf) return true;
+
+    const compactTurnIndex = branch.findIndex((entry) => entry.id === compactTurnLeaf);
+    if (compactTurnIndex === -1) return true;
+
+    return branch
+        .slice(compactTurnIndex + 1)
+        .some((entry) => !PassiveCompactionEntryTypes.has(entry.type));
 };
 
 const resolveTargetId = (sm: SessionManager, target: string): string => {
