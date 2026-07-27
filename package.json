@@ -1,6 +1,6 @@
 {
   "name": "pi-context",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Agentic Context Management for Pi",
   "files": [
     "src",
