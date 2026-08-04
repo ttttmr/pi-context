@@ -61,8 +61,8 @@ Usually skip this skill for one-shot reads, bounded summaries, direct rewrites, 
 At the start of each new user message, classify it:
 
 - **Same task / next phase:** continue; if the previous phase is complete and noisy, compact before the next phase.
-- **Correction or follow-up:** usually answer from recent context; do not compact yet.
-- **New task or direction shift:** if the previous task left a complete noisy segment, inspect timeline when anchors are unclear, then compact to a continuation anchor that gives the new task a clean working set.
+- **Correction, review, or feedback on recent work:** answer from the raw recent context; do not compact merely to respond. Questions about implementation choices, shortcuts, trade-offs, or known risks are exactly why the completed work should remain inspectable.
+- **New task, explicit next step, or direction shift:** if the previous task left a complete noisy segment, inspect timeline when anchors are unclear, then compact to a continuation anchor that gives the now-known next work a clean working set.
 
 Think of the tools as a phase pipeline: checkpoint marks anchors, work happens, timeline shows structure, and compact creates a new branch from the chosen continuation anchor with a summary of what happened after it. The target is a working-set choice, not an age choice.
 
@@ -72,18 +72,20 @@ Think of the tools as a phase pipeline: checkpoint marks anchors, work happens, 
 2. When the task shape is clear, read one matching scenario reference only if it will change tool timing, anchor choice, or summary content. Skip reference loading for obvious short applications where this main skill body is enough.
 3. Add checkpoints at meaningful milestones: phase boundaries, risky attempts, reusable batch methods, and interruptions.
 4. Use `context_timeline` when the active path structure affects the next decision or compact target.
-5. At continuation boundaries, run the compact gate before starting another phase. If the whole requested task is complete and only the final response remains, answer and wait.
+5. At continuation boundaries, run the compact gate before starting another known phase. If the whole requested task is complete, present the result and wait for feedback; delivery and a request for feedback are not themselves a continuation.
 6. After a successful compact, continue from the injected summary instead of dragging the full raw path forward.
 
 ## Continuation boundaries
 
 A continuation boundary is a point where the current phase has produced a stable result and the next action will use that result to start a different phase. It is not necessarily the end of the user's whole task.
 
-Examples: investigation -> decision/plan/implementation, implementation -> validation, failed validation -> next approach, delayed result -> routing/action, user decision -> execution, rejected branch -> replacement direction, side request -> pause/summarize mainline before switching.
+Examples: investigation -> decision/plan/implementation, implementation -> validation, failed validation -> next approach, delayed result -> routing/action, received user decision -> execution, rejected branch -> replacement direction, side request -> pause/summarize mainline before switching.
 
 Do not ask only "is the whole task done?" Ask "will the next action start a new phase using the stable result of this phase?" If yes, this is often a compaction boundary.
 
-Handoffs are not final answers: if a response transfers control to the user, another actor/process, later validation, or a queued phase, compact when the prior phase was noisy and the next action needs only stable state.
+A response that presents completed work and asks the user for review, feedback, or a decision is **not** a continuation boundary: the next work is unknown, and the user may ask about details from the raw trail. Deliver the result and wait without compacting. Once feedback or an explicit next task arrives, decide whether the resulting known continuation benefits from compaction.
+
+An actual handoff to a known next actor, process, validation, or queued phase can be a boundary when the next action is defined and needs only stable state. Do not treat a merely possible later user response as that kind of handoff.
 
 ## Read the right reference
 
@@ -119,7 +121,7 @@ When reading the timeline, ask which raw messages are still needed for the immed
 
 Use it to replace raw history with a state summary when the next phase would benefit from a smaller working set.
 
-Typical compact boundaries: investigation -> execution, diagnosis -> fix, implementation -> validation, failed attempt -> next attempt, representative item -> remaining batch, completed noisy task -> new user task.
+Typical compact boundaries: investigation -> execution, diagnosis -> fix, implementation -> validation, failed attempt -> next attempt, representative item -> remaining batch, completed noisy task -> a newly received user task.
 
 Strong signals to consider compaction:
 
@@ -139,11 +141,11 @@ Before calling `context_compact`, require all three:
 
 1. The segment being left behind is noisy, stale, failed, low-value in raw form, or actively reducing focus.
 2. You can restore the useful task state in a clear summary.
-3. There is an immediate continuation that benefits from cleaner context.
+3. There is an immediate, known continuation that benefits from cleaner context—not merely a possible user response or feedback request.
 
 If the compact is prompted by a new user message, a direction shift, or several possible checkpoint targets, run `context_timeline` first and choose the target from visible structure rather than memory.
 
-If the whole task is done and only the final answer remains, wait. Compact later only if the next user message makes it useful.
+If the whole task is done, present the result and wait. Do not compact before or while asking for feedback, review, approval, or the user's next instruction. Compact later only after that message establishes a concrete continuation and cleanup is useful.
 
 Checkpoint-only failure mode: a checkpoint is useful because it gives you a clean anchor to compact back to later. After any checkpointed phase produces a stable result, ask what the phase settled, whether the next step is different, and whether a summary can replace the raw trail. If yes, compact; do not keep accumulating raw history just because the overall task is still active.
 
@@ -169,7 +171,7 @@ Context tools change conversation state, not the outside world. Files, processes
 
 A compact summary must restore:
 
-1. **Task state:** current task, user intent, constraints, decisions, assumptions, and known result/progress/failure.
+1. **Task state:** current task, user intent, constraints, decisions, assumptions, known result/progress/failure, and—when relevant—deliberate shortcuts, temporary workarounds, trade-offs, known limitations, and questions still awaiting user feedback.
 2. **External state:** changed files, created/deleted artifacts, running/stopped processes, browser actions, tickets/records, deployments, remote changes.
 3. **Verification state:** commands already run, validation status, notable outputs, and remaining risks or open questions.
 4. **Navigation state:** source anchors/evidence when needed, rejected leads worth avoiding, backup checkpoint guidance, and explicit next step.
@@ -197,6 +199,7 @@ Avoid:
 - compacting blindly without timeline when anchor choice is unclear
 - preserving too much raw history because older anchors or `root` feel risky
 - using an old anchor or `root` with a weak summary
+- compacting before presenting a final deliverable or while awaiting user feedback, approval, or review
 - compacting immediately after a final deliverable when no next user intent is known
 - carrying completed noisy phases into a new task
 - treating handoff or decision prompts as final answers when a continuation is expected

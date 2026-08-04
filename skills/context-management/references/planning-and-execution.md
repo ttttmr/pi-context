@@ -33,7 +33,7 @@ Both variants use the same context-management rhythm.
 5. Once the subtask produces a stable takeaway and another subtask or phase remains, compact to the anchor that gives the next subtask the cleanest sufficient working set, often the plan-ready or phase-start anchor.
 6. Continue with the next subtask from that focused working set.
 7. If the plan changes materially, checkpoint the updated plan state again.
-8. If the last subtask completes the user's whole request, give the final answer without an automatic compact; decide on cleanup at the next user message if the conversation continues.
+8. If the last subtask completes the user's whole request, give the final answer without an automatic compact and retain the raw trail for review or feedback. Decide on cleanup only when a later message establishes a new task or explicit next phase.
 
 ## Useful anchors
 

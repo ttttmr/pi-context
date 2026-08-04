@@ -16,7 +16,7 @@ This reference is for **pause/resume, cleanup, and clean continuation**. It is n
 Use when you are actively switching away from one line of work and intend to come back.
 
 ### Completed-task handoff
-Use when a previous task is complete, the user has now said something new, and the previous task's raw path is noisy enough that it should not be carried into the new work.
+Use when a previous task is complete, the user has started a new task or given an explicit next instruction, and the previous task's raw path is noisy enough that it should not be carried into the new work. A request for review, feedback, or an explanation of the completed work is not this handoff.
 
 ### Cleanup and continue
 Use when the thread is already stale or messy and you want to compress it now, even though context management is being adopted late.
@@ -59,7 +59,7 @@ Compact when:
 - the useful state is now much smaller than the accumulated process
 - you can express the handoff clearly in a summary
 
-Do not compact at the instant you finish a user-visible task if there is no known continuation. In that moment, deliver the answer and wait. If the next user message starts a new task, that is the right time to compact the completed task before proceeding. If the completed task changed files, browser state, tickets, or remote services, include those side effects in the handoff summary because the context move does not undo them. If the interruption was tiny and clean, a compact may be unnecessary. A checkpoint before switching away is still the key move.
+Do not compact at the instant you finish a user-visible task if there is no known continuation. In that moment, deliver the answer and wait, retaining the raw trail for review, feedback, or questions about the work. If a later user message starts a new task or establishes an explicit next phase, that is the right time to decide whether compacting the completed task helps before proceeding. If the completed task changed files, browser state, tickets, or remote services, include those side effects in the handoff summary because the context move does not undo them. If the interruption was tiny and clean, a compact may be unnecessary. A checkpoint before switching away is still the key move.
 
 ## Common mistakes
 

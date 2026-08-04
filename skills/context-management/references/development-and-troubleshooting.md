@@ -15,7 +15,7 @@ These tasks often stay cleaner when treated as stages with anchors, instead of o
 1. Create a checkpoint before starting serious work.
 2. Add checkpoints before risky edits, new approaches, or major phase changes.
 3. Review the timeline when you need to understand the current shape of the work.
-4. Compact after a stable implementation milestone, a failed approach, or a completed troubleshooting phase when there is another phase, attempt, validation step, or task switch that benefits from cleanup. If files, processes, or external systems changed, include those side effects in the summary because context navigation does not roll them back. If the completed phase is also the final user-visible deliverable, answer first and wait.
+4. Compact after a stable implementation milestone, a failed approach, or a completed troubleshooting phase when there is another known phase, attempt, validation step, or task switch that benefits from cleanup. If files, processes, or external systems changed, include those side effects in the summary because context navigation does not roll them back. If the completed phase is the final user-visible deliverable, present it and wait for feedback or the next instruction; do not compact merely because you asked for review.
 
 ## Typical checkpoint moments
 
@@ -56,7 +56,7 @@ context_compact({
 
 ### After a completed phase
 
-Use compact when a phase is done and the next phase would work better from a focused state summary than from the raw implementation/debugging trail. Do not use this as a reflexive final step after delivering the finished work; use it before validation, the next phase, the next attempt, or the next user task.
+Use compact when a phase is done and a known next phase would work better from a focused state summary than from the raw implementation/debugging trail. Do not use this as a reflexive final step before or after delivering finished work: preserve the raw trail while awaiting review, feedback, or a decision. Compact only when validation, a next phase, a next attempt, or a newly received user task makes the continuation concrete.
 
 ```javascript
 context_compact({

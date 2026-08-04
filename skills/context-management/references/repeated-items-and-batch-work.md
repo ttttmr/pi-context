@@ -17,7 +17,7 @@ Use this reference when the items are similar enough that the same method should
 4. Compact after each completed item or completed mini-phase when another item remains and the raw path is no longer worth carrying forward.
 5. Use timeline occasionally to verify that the history still has a clean structure.
 
-For repeated-item work, the default between-item move is not "keep carrying the last item's raw reasoning". Once an item is done, its takeaway is stable, and another item remains, compact to the repeated-work anchor or other baseline that preserves the reusable method without item-specific noise. If the last item completes the whole user request, deliver the final answer and wait for the next user message before deciding whether to compact.
+For repeated-item work, the default between-item move is not "keep carrying the last item's raw reasoning". Once an item is done, its takeaway is stable, and another item remains, compact to the repeated-work anchor or other baseline that preserves the reusable method without item-specific noise. If the last item completes the whole user request, deliver the final answer and retain the raw trail for review or feedback; decide whether to compact only after a later message establishes new work or an explicit next phase.
 
 ## Useful anchors
 
