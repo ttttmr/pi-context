@@ -27,7 +27,7 @@ pi install npm:pi-context
 
 ### For Humans
 
-Run the following command to enable ACM (**A**gentic **C**ontext **M**anagement) for the current session.
+Run the following command to enable checkpoint-based branch compaction for the current session. The ranged compaction tool and automatic fallback do not require this command.
 
 ```bash
 /acm
@@ -43,7 +43,7 @@ Open a visual dashboard to inspect context-window usage and token distribution (
 
 ### For Agents
 
-This extension adds the `context-management` skill, which guides agents to keep the active conversation as the smallest sufficient working set for the next step. It includes three core tools:
+This extension adds the `context-management` skill, which guides agents to keep the active conversation as the smallest sufficient working set for the next step. It includes five core tools:
 
 1. **🔖 Anchor (`context_checkpoint`)**
    Label a meaningful conversation node with a unique semantic checkpoint name, such as `parser-fix-start` or `timeout-investigation-search`.
@@ -53,3 +53,9 @@ This extension adds the `context-management` skill, which guides agents to keep 
 
 3. **⏪ Compact (`context_compact`)**
    Create a summarized continuation branch from an earlier checkpoint, history node, or `root`. The summary should restore the useful state after the target: current task, decisions, external side effects such as changed files or remote updates, validation state, source anchors, and the explicit next step.
+
+4. **🔎 Inspect ranges (`context_range_inspect`)**
+   List stable `mNNNN` message and `bN` compacted-block references only when the agent needs to select ranged-compaction boundaries. References are not injected into normal conversation messages.
+
+5. **✂️ Compact range (`context_compact_range`)**
+   Replace one or more completed historical ranges in the model-facing context with state summaries while preserving later messages verbatim. The agent obtains boundaries from `context_range_inspect`; original session history remains unchanged. On the first model turn at or above 50% context usage, the extension prunes deterministic duplicate/stale tool output and requests full compaction at the settled boundary. Resuming a session alone does not run this lifecycle.

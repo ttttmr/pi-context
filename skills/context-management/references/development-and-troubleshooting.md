@@ -66,6 +66,10 @@ context_compact({
 });
 ```
 
+### Preserve later fixes or feedback
+
+Use `context_compact_range` when a completed diagnosis, failed attempt, or verbose test run is in the middle of the conversation but later implementation changes, user corrections, or review feedback must stay verbatim. Keep the current edit/validation frontier raw, and prefer compacting the most recent stale segment rather than an early prefix.
+
 ## Warning signs
 
 Switch into stronger context-management behavior when:

@@ -61,6 +61,10 @@ Compact when:
 
 Do not compact at the instant you finish a user-visible task if there is no known continuation. In that moment, deliver the answer and wait, retaining the raw trail for review, feedback, or questions about the work. If a later user message starts a new task or establishes an explicit next phase, that is the right time to decide whether compacting the completed task helps before proceeding. If the completed task changed files, browser state, tickets, or remote services, include those side effects in the handoff summary because the context move does not undo them. If the interruption was tiny and clean, a compact may be unnecessary. A checkpoint before switching away is still the key move.
 
+## Range cleanup without switching branches
+
+Use `context_compact_range` when a stale side task or completed interruption occupies a middle segment and the later resumed-mainline discussion should remain verbatim. Compact only the stale segment, preserve any still-active front raw, and avoid reaching far back into early history unless the recovered space clearly outweighs prompt-cache invalidation.
+
 ## Common mistakes
 
 Avoid:

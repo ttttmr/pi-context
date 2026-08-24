@@ -59,6 +59,8 @@ If you already have one of these, the investigation phase is usually complete en
 
 Do not compact in the middle of a still-open search loop just because the thread feels busy.
 
+If a completed research branch sits in the middle of the conversation and later constraints or active work must remain verbatim, use `context_compact_range` for that branch instead of resetting the whole suffix. Prefer a recent completed branch; compacting very early material invalidates more prompt-cache reuse. Keep source excerpts raw when the next step still needs to compare or quote them directly.
+
 ## Message quality for research compactions
 
 Research compactions are especially sensitive to summary quality. The raw exploration may contain details that become important later, but returning to the backup branch is a context switch. Preserve the state needed to use the finding, not the whole journey.

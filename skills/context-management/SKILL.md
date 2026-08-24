@@ -18,6 +18,8 @@ Use only these tools:
 - `context_checkpoint`
 - `context_timeline`
 - `context_compact`
+- `context_range_inspect`
+- `context_compact_range`
 
 ## Working-set model
 
@@ -134,6 +136,22 @@ Strong signals to consider compaction:
 - side question arriving while stale process history is active
 
 Do not compact while exploration is still active, when the result is unstable, just because the skill triggered, or just because the user-visible task ended.
+
+### `context_compact_range`
+
+Use it when a completed or stale **middle segment** can become a summary but later messages must remain verbatim. Prefer `context_compact` when the completed work forms the whole suffix and the next phase should start from a clean continuation branch.
+
+Choose ranges conservatively:
+
+- preserve the recent active frontier and unresolved user instructions
+- keep evidence raw when the immediate next step must inspect it directly
+- prefer recent completed segments over very early history; rewriting an early prefix invalidates more prompt-cache reuse
+- keep assistant tool calls and their results together
+- batch independent ranges in one call
+- use visible `mNNNN` message IDs or `bN` compacted-block IDs returned by `context_range_inspect`; inspect immediately before compacting because references are not injected into normal conversation context
+- include an existing block in a larger range only when hierarchical cleanup is worth the additional cache invalidation
+
+Summaries follow the same state contract as `context_compact`: preserve decisions, constraints, external side effects, validation state, source pointers, open questions, and the next action. Do not compact active exploration merely because an old segment exists.
 
 ## Compact gate
 
