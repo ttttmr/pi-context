@@ -12,6 +12,7 @@ import {
     type ImageContent,
     type ToolCall,
 } from "@earendil-works/pi-ai";
+import { registerRangeCompaction } from "./range-compaction.js";
 import { formatTokens } from "./utils.js";
 
 // Define missing types locally as they are not exported from the main entry point
@@ -21,7 +22,7 @@ interface SessionTreeNode {
     label?: string;
 }
 
-const InternalTools = ["context_checkpoint", "context_timeline", "context_compact"];
+const InternalTools = ["context_checkpoint", "context_timeline", "context_compact", "context_range_inspect", "context_compact_range"];
 const PiContextCustomMessageType = "pi-context";
 const AcmEnableFollowUp = "Agentic context management is now enabled";
 let CommandCtx: ExtensionCommandContext | null = null;
@@ -106,6 +107,8 @@ const ContextCheckpointParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+    registerRangeCompaction(pi);
+
     pi.registerCommand("acm", {
         description: "Enable agentic context management for the current session",
         handler: async (args, ctx) => {
