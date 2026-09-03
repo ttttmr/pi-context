@@ -268,7 +268,7 @@ export const addRangeCompactionAdvisory = (
     const output = [...messages];
     output[userIndex] = appendText(
         output[userIndex],
-        `<pi-context-range-advisory>Context usage is ${usagePercent.toFixed(1)}%. If completed older phases or stale tool output exist, consider context_compact_range for surgical cleanup while preserving the active turn. If ACM is enabled and the completed suffix should become a fresh continuation, context_compact may be preferable. Otherwise continue without compacting.</pi-context-range-advisory>`,
+        `<pi-context-range-advisory>Context usage is ${usagePercent.toFixed(1)}%. Apply context management before more task tools. Priority: (1) if a completed suffix can be replaced and an immediate continuation exists, call context_compact; (2) otherwise, if completed prefix or middle ranges can be replaced while preserving the active frontier, call context_range_inspect and then context_compact_range; (3) if neither is valid, continue without compacting. Do not request full compaction; Pi's built-in compaction is the last-resort near-limit fallback.</pi-context-range-advisory>`,
     );
     return output;
 };
@@ -421,19 +421,19 @@ export const registerRangeCompaction = (
 ): void => {
     let state = createRangeCompactionState();
     let latestMessages: AgentMessage[] = [];
-    let autoCompactPending = false;
+    let thresholdAdvisoryShown = false;
 
     const persist = () => pi.appendEntry(StateEntryType, state);
     const restore = (ctx: ExtensionContext) => {
         state = restoreRangeCompactionState(ctx.sessionManager.getBranch());
         latestMessages = [];
-        autoCompactPending = false;
+        thresholdAdvisoryShown = false;
     };
 
     pi.on("session_start", async (_event, ctx) => restore(ctx));
     pi.on("session_tree", async (_event, ctx) => restore(ctx));
     pi.on("session_compact", async () => {
-        autoCompactPending = false;
+        thresholdAdvisoryShown = false;
         for (const block of state.blocks) block.active = false;
         state.prunedToolIds = [];
         state.purgedErrorToolIds = [];
@@ -441,29 +441,29 @@ export const registerRangeCompaction = (
     });
     pi.on("context", async (event, ctx) => {
         latestMessages = event.messages;
-        const rawUsagePercent = ctx.getContextUsage()?.percent;
-        const usagePercent = rawUsagePercent ?? undefined;
+        const usagePercent = ctx.getContextUsage()?.percent ?? undefined;
         const triggerPercent = options.triggerPercent ?? RangeCompactionTriggerPercent;
-        if (usagePercent !== undefined && usagePercent >= triggerPercent && !autoCompactPending) {
-            const cleanup = calculateToolCleanup(event.messages);
-            state.prunedToolIds = cleanup.prunedToolIds;
-            state.purgedErrorToolIds = cleanup.purgedErrorToolIds;
-            autoCompactPending = true;
-            persist();
+        let showAdvisory = false;
+        if (usagePercent !== undefined && usagePercent >= triggerPercent) {
+            if (!thresholdAdvisoryShown) {
+                const cleanup = calculateToolCleanup(event.messages);
+                state.prunedToolIds = cleanup.prunedToolIds;
+                state.purgedErrorToolIds = cleanup.purgedErrorToolIds;
+                thresholdAdvisoryShown = true;
+                showAdvisory = true;
+                persist();
+            }
+        } else {
+            thresholdAdvisoryShown = false;
         }
         const projected = projectRangeCompactions(state, event.messages);
         return {
-            messages: addRangeCompactionAdvisory(projected, usagePercent, triggerPercent),
+            messages: addRangeCompactionAdvisory(
+                projected,
+                showAdvisory ? usagePercent : undefined,
+                triggerPercent,
+            ),
         };
-    });
-    pi.on("agent_settled", (_event, ctx) => {
-        if (!autoCompactPending) return;
-        ctx.compact({
-            customInstructions: "Preserve current task state, user constraints and corrections, external side effects, validation evidence, open risks, and the explicit next step. Omit duplicate, stale, failed, or superseded tool process.",
-            onError: () => {
-                autoCompactPending = false;
-            },
-        });
     });
 
     pi.registerCommand("context-ranges", {

@@ -170,22 +170,27 @@ test("purges stale failed inputs but preserves the error result", () => {
     assert.match(projected[2].content[0].text, /diagnostic/);
 });
 
-test("adds the range advisory above the usage threshold without requiring ACM", () => {
+test("advises suffix compaction before ranged cleanup and built-in fallback", () => {
     const messages = [user("old", 1), assistant("old reply", 2), user("current", 3)];
 
     assert.equal(addRangeCompactionAdvisory(messages, 84.9, 85), messages);
 
     const projected = addRangeCompactionAdvisory(messages, 85, 85);
     assert.notEqual(projected, messages);
-    assert.match(projected[2].content.at(-1).text, /context_compact_range/);
-    assert.match(projected[2].content.at(-1).text, /85\.0%/);
+    const advisory = projected[2].content.at(-1).text;
+    assert.match(advisory, /call context_compact/);
+    assert.match(advisory, /context_range_inspect and then context_compact_range/);
+    assert.match(advisory, /built-in compaction is the last-resort/);
+    assert.ok(advisory.indexOf("call context_compact") < advisory.indexOf("context_range_inspect"));
+    assert.match(advisory, /85\.0%/);
     assert.equal(projected[0], messages[0]);
 });
 
-test("automatically prunes and requests compaction at 85 percent", async () => {
+test("threshold advisory never aborts or requests full compaction", async () => {
     const handlers = new Map();
     const appended = [];
-    let compactOptions;
+    let aborted = false;
+    let compacted = false;
     registerRangeCompaction({
         on(name, handler) { handlers.set(name, handler); },
         registerCommand() {},
@@ -195,11 +200,20 @@ test("automatically prunes and requests compaction at 85 percent", async () => {
 
     const messages = [user("old", 1), assistant("old reply", 2), user("current", 3)];
     await handlers.get("session_start")({}, { sessionManager: { getBranch: () => [] } });
-    await handlers.get("context")({ messages }, { getContextUsage: () => ({ percent: 85 }) });
-    handlers.get("agent_settled")({}, { compact(options) { compactOptions = options; } });
+    const context = {
+        getContextUsage: () => ({ percent: 85 }),
+        abort() { aborted = true; },
+        compact() { compacted = true; },
+    };
+    const first = await handlers.get("context")({ messages }, context);
+    const second = await handlers.get("context")({ messages }, context);
 
+    assert.equal(aborted, false);
+    assert.equal(compacted, false);
+    assert.equal(handlers.has("agent_settled"), false);
     assert.equal(appended.length, 1);
-    assert.match(compactOptions.customInstructions, /Preserve current task state/);
+    assert.match(first.messages.at(-1).content.at(-1).text, /call context_compact/);
+    assert.doesNotMatch(JSON.stringify(second.messages), /pi-context-range-advisory/);
 });
 
 test("registers a model tool that persists and applies ranged compaction", async () => {
