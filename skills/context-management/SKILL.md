@@ -74,8 +74,10 @@ Think of the tools as a phase pipeline: checkpoint marks anchors, work happens, 
 2. When the task shape is clear, read one matching scenario reference only if it will change tool timing, anchor choice, or summary content. Skip reference loading for obvious short applications where this main skill body is enough.
 3. Add checkpoints at meaningful milestones: phase boundaries, risky attempts, reusable batch methods, and interruptions.
 4. Use `context_timeline` when the active path structure affects the next decision or compact target.
-5. At continuation boundaries, run the compact gate before starting another known phase. If the whole requested task is complete, present the result and wait for feedback; delivery and a request for feedback are not themselves a continuation.
-6. After a successful compact, continue from the injected summary instead of dragging the full raw path forward.
+5. At continuation boundaries, run the compact gate **before the first non-context tool of the next phase**. When the gate passes, `context_compact` is the highest-priority action. If the whole requested task is complete, present the result and wait for feedback; delivery and a request for feedback are not themselves a continuation.
+6. Use `context_compact_range` only when no suffix compaction is appropriate and completed prefix or middle history can be summarized while the active frontier stays raw.
+7. Leave full built-in compaction to Pi as the last-resort near-limit or overflow recovery path.
+8. After a successful compact, continue from the injected summary instead of dragging the full raw path forward.
 
 ## Continuation boundaries
 
@@ -119,9 +121,9 @@ Use it as the structural view of the active path:
 
 When reading the timeline, ask which raw messages are still needed for the immediate next action, which paths are now baggage, and which anchor gives the smallest sufficient working set after summary injection.
 
-### `context_compact`
+### `context_compact` — first priority
 
-Use it to replace raw history with a state summary when the next phase would benefit from a smaller working set.
+Use it to replace a completed suffix with a state summary when the next phase would benefit from a smaller working set. At a valid continuation boundary, call it before any non-context tool for the next phase.
 
 Typical compact boundaries: investigation -> execution, diagnosis -> fix, implementation -> validation, failed attempt -> next attempt, representative item -> remaining batch, completed noisy task -> a newly received user task.
 
@@ -137,11 +139,11 @@ Strong signals to consider compaction:
 
 Do not compact while exploration is still active, when the result is unstable, just because the skill triggered, or just because the user-visible task ended.
 
-### `context_compact_range`
+### `context_compact_range` — second priority
 
-Use it when a completed or stale **middle segment** can become a summary but later messages must remain verbatim. Prefer `context_compact` when the completed work forms the whole suffix and the next phase should start from a clean continuation branch.
+Use it only when suffix compaction is not appropriate and a completed or stale prefix/middle segment can become a summary while later messages remain verbatim.
 
-Choose ranges conservatively:
+Choose ranges conservatively. Semantic checkpoint-based `context_compact` is always preferred when its gate passes. At 50% context usage, an advisory reminds you to apply this precedence; it never aborts work or requests full compaction. Pi's built-in full compaction is the last resort near the model limit or after overflow.
 
 - preserve the recent active frontier and unresolved user instructions
 - keep evidence raw when the immediate next step must inspect it directly
@@ -154,6 +156,12 @@ Choose ranges conservatively:
 Summaries follow the same state contract as `context_compact`: preserve decisions, constraints, external side effects, validation state, source pointers, open questions, and the next action. Do not compact active exploration merely because an old segment exists.
 
 ## Compact gate
+
+Before any compaction, apply this order:
+
+1. `context_compact` for a completed suffix at a valid continuation boundary.
+2. `context_compact_range` for completed prefix/middle history when the active frontier must remain raw.
+3. Pi built-in full compaction only as near-limit or overflow recovery.
 
 Before calling `context_compact`, require all three:
 
