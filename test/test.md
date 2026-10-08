@@ -17,6 +17,12 @@ Strictly follow the steps below.
 
 `npm test` covers checkpoint phase-suffix parsing, timeline structure without compact advice, and interval token estimates (which exclude internal context-management traffic).
 
+## Codemode regression
+
+`npm test` covers parent-call anchoring, opaque parent IDs, mixed codemode scripts, whole-output retention before the summary (including text/images), original-history recovery, store state, unchanged billing, long summaries and truncated nested records. It also covers cancellation for failed scripts, missing/ambiguous/mismatched compact results, duplicate compacts, parallel outer calls, invalid targets, contextual advancement, queued input, and declined navigation.
+
+For a live check on Pi >= 0.99.0, enable the built-in codemode extension with `codemode.mode="only"` in isolated settings and explicitly load this checkout's `src/index.ts` (not an older installed copy). Print a tool result, await `context_compact` to an earlier checkpoint, then print another result. Confirm the model sees prefix → full script output → summary, continues without rerunning the script, and can still `load()` stored values. Repeat with classifier/image calls and an omitted long-summary argument. A thrown script error, a second compact request, or a new contextual message must cancel without switching the active path.
+
 ## Live command-context validation
 
 Run the opt-in real-model test (uses existing Pi authentication and consumes tokens):

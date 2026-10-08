@@ -4,7 +4,7 @@ import {
   DynamicBorder,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Spacer } from "@earendil-works/pi-tui";
-import { formatTokens } from "./utils.js";
+import { estimateHistoryTokens, formatTokens, RetainedCodemodeOutputType } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("context", {
@@ -54,6 +54,8 @@ export default function (pi: ExtensionAPI) {
           }
         } else if (entry.type === "branch_summary" || entry.type === "compaction") {
           msgTokensRaw += estimateTokens(entry.summary || "");
+        } else if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
+          toolResultTokensRaw += estimateHistoryTokens(entry);
         }
       }
 
