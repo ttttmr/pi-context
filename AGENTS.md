@@ -3,7 +3,7 @@
 **Generated:** 2026-09-20
 
 ## OVERVIEW
-Project: **pi-context** (v2.2.0)
+Project: **pi-context** (v2.3.0)
 Stack: TypeScript (ES2022 / Node16, strict, ESM), `@earendil-works/pi-coding-agent` >= 0.84.2, `@earendil-works/pi-ai` Type schemas, `@earendil-works/pi-tui` for the dashboard. Plain Node 20+ `.mjs` for dev tooling and tests (no extra deps).
 
 An Agentic Context Management extension for the `pi` coding agent. It lets agents structure, inspect, and clean up conversation history via named checkpoints, a structural timeline view, and checkpoint-based compaction — lossless time travel over Pi's session tree.
