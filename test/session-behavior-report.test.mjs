@@ -49,6 +49,32 @@ test('behavior report renders calls without positive usage and exports only safe
     } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('CLI, JSON and HTML retain the codemode partial-analysis warning', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'session-codemode-warning-'));
+    try {
+        const entries = [
+            { type: 'session', id: 's', timestamp: '2026-01-01T00:00:00Z' },
+            { type: 'message', id: 'a', parentId: 's', timestamp: '2026-01-01T00:00:01Z', message: {
+                role: 'assistant', content: [{ type: 'toolCall', id: 'outer', name: 'codemode', arguments: {} }],
+            } },
+            { type: 'message', id: 'r', parentId: 'a', timestamp: '2026-01-01T00:00:02Z', message: {
+                role: 'toolResult', toolName: 'codemode', toolCallId: 'outer', isError: false,
+                content: [{ type: 'text', text: 'Script completed' }], nestedCalls: { complete: false, calls: [] },
+            } },
+        ];
+        const input = join(directory, 'session.jsonl'), output = join(directory, 'report');
+        await writeFile(input, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+        const result = JSON.parse(execFileSync(process.execPath, [cli, input, '--out', output], { encoding: 'utf8' }));
+        const data = JSON.parse(await readFile(join(output, 'session-token-data.json'), 'utf8'));
+        assert.equal(result.toolCalls, 1);
+        assert.deepEqual(data.tools.map(tool => tool.name), ['codemode']);
+        const warning = data.warnings.find(value => /Codemode nested tool calls are not analyzed/.test(value));
+        assert.ok(warning);
+        assert.ok(result.warnings.includes(warning));
+        assert.ok((await readFile(join(output, 'session-token-chart.html'), 'utf8')).includes(warning));
+    } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 for (const header of [true, false]) test(`empty ${header ? 'session' : 'file'} creates a zero-activity report without inventing observations`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'session-empty-test-'));
     try {

@@ -31,6 +31,25 @@ test('empty tool and usage sessions retain the complete report array schema', ()
     }
 });
 
+for (const nestedCalls of [undefined, { complete: true, calls: [
+    { id: 'outer/1', name: 'context_compact', status: 'ok', arguments: { summary: 'PRIVATE_NESTED_BODY' } },
+] }, { complete: false, calls: [] }]) {
+    test(`codemode metrics explicitly warn of partial coverage (${JSON.stringify(nestedCalls)})`, () => {
+        const f = fixture();
+        f.assistant('a', 's', [call('outer', 'codemode')]);
+        f.result('r', 'a', 'outer', 'Script completed', false, {
+            toolName: 'codemode', ...(nestedCalls ? { nestedCalls } : {}),
+        });
+        const data = f.analyze();
+        const warnings = data.warnings.filter(warning => /Codemode nested tool calls are not analyzed/.test(warning));
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /zero counts do not prove absence/);
+        assert.match(warnings[0], /attribution, recovery, and threshold simulation are incomplete/);
+        assert.deepEqual(data.tools.map(tool => tool.name), ['codemode']);
+        assert.equal(JSON.stringify(data).includes('PRIVATE_NESTED_BODY'), false);
+    });
+}
+
 test('tool results join interleaved calls by ID, with privacy-safe text counts and statuses', () => {
     const f = fixture();
     f.assistant('a', 's', [read('r', '/work/src/a.ts'), call('b', 'bash', { command: 'SECRET_COMMAND' }),

@@ -280,6 +280,7 @@ export function analyzeSessionSnapshot(snapshot) {
     const points = [], usageRows = [], checkpoints = [], events = [];
     const totals = Object.fromEntries([...usageFields, 'total'].map(field => [field, 0]));
     let cumulative = 0, excludedZeroContext = 0, missingAssistantUsage = 0, lastTime = -Infinity;
+    let warnedNestedCalls = false;
     for (const entry of entries) {
         const time = Date.parse(entry.timestamp);
         if (!Number.isFinite(time)) throw new Error(`Session timestamp invalid at line ${entry.line}`);
@@ -287,6 +288,14 @@ export function analyzeSessionSnapshot(snapshot) {
         lastTime = time;
         const base = { line: entry.line, entryId: entry.id ?? null, timestamp: entry.timestamp, time };
         const message = entry.message;
+        // Only direct transcript calls have standalone result evidence here.
+        // Warn even when codemode's nested recorder is missing or incomplete.
+        if (!warnedNestedCalls && (message?.nestedCalls !== undefined ||
+            (message?.role === 'toolResult' && ['codemode', 'functions.codemode'].includes(message.toolName)) ||
+            toolCalls(entry).some(call => ['codemode', 'functions.codemode'].includes(call.name)))) {
+            warnings.push('Codemode nested tool calls are not analyzed: tool/compact counts cover only direct calls, so zero counts do not prove absence. Codemode compaction attribution, recovery, and threshold simulation are incomplete.');
+            warnedNestedCalls = true;
+        }
         const isAssistant = entry.type === 'message' && message?.role === 'assistant';
         const usage = isAssistant || message?.role === 'toolResult' ? message?.usage
             : ['compaction', 'branch_summary'].includes(entry.type) ? entry.usage : null;
