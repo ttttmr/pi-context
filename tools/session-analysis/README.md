@@ -31,7 +31,7 @@ Calls join results by `toolCallId` on parent ancestry, not by proximity alone. A
 
 Tool times are record timestamps. They are not precise execution start/end instrumentation; execution duration is unknown. Output size is the joined text's JavaScript string length (UTF-16 code units), including any tool-added notices, not tokens or original file size. Images are not counted as text. Truncation is based on recorded indicators; absence of an indicator is not a completeness guarantee. An explicitly paged read is not by itself an output-truncation error.
 
-A `context_compact` result such as `compact start` only acknowledges the call. An attempt with no attributable `branch_summary` remains unconfirmed, even if the process exits successfully. A non-error, positive-input assistant descendant is evidence of model continuation, not task completion. Pending or cut-off snapshots cannot prove an attempt permanently failed.
+A `context_compact` result such as `compact start` or `context_compact scheduled` only acknowledges the call. Pi-context <= 2.3 confirms a compaction with an attributable `branch_summary`; later versions fold history in place and confirm it with a `pi-context-compaction` summary message whose `context_edit` omissions identify removed history. An attempt with neither remains unconfirmed, even if the process exits successfully. A non-error, positive-input assistant descendant is evidence of model continuation, not task completion. Pending or cut-off snapshots cannot prove an attempt permanently failed.
 
 Recovery read overlaps are evidence only:
 

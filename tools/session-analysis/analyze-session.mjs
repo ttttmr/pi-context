@@ -124,6 +124,10 @@ function sessionAncestry(startId, entriesById) {
     return path;
 }
 
+/** In-place compaction summary (pi-context > 2.3); its context edits immediately precede it. */
+const isFoldSummary = entry => entry.type === 'custom_message' && entry.customType === 'pi-context-compaction'
+    && entry.details && typeof entry.details === 'object';
+
 function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
     const cwd = entries.find(entry => entry.type === 'session')?.cwd;
     const tools = [], milestones = [], skillReads = [], compactAttempts = [];
@@ -132,9 +136,9 @@ function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
     for (const entry of entries) {
         const base = { line: entry.line, time: Date.parse(entry.timestamp), entryId: entry.id ?? null };
         const kind = entry.message?.role === 'user' ? 'user' : entry.type === 'branch_summary' ? 'branch'
-            : entry.type === 'compaction' ? 'native-compaction' : null;
+            : entry.type === 'compaction' ? 'native-compaction' : isFoldSummary(entry) ? 'fold' : null;
         if (kind) milestones.push({ ...base, kind, label: kind === 'user' ? 'User turn'
-            : kind === 'branch' ? 'Branch summary' : 'Native compaction',
+            : kind === 'branch' ? 'Branch summary' : kind === 'fold' ? 'Context compaction' : 'Native compaction',
             ...(kind === 'branch' ? { fromId: entry.fromId ?? null, targetId: entry.parentId ?? null,
                 fromLine: entriesById.get(entry.fromId)?.line ?? null,
                 targetLine: entriesById.get(entry.parentId)?.line ?? null } : {}) });
@@ -189,26 +193,33 @@ function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
     for (const tool of tools.filter(tool => tool.name === 'context_compact')) {
         const { call, entry } = privateTools.get(tool.key);
         const args = call.arguments ?? {};
+        // <= 2.3 compacts by branching; later versions fold history in place with context edits.
         const branch = entries.find(candidate => candidate.type === 'branch_summary' && candidate.line > tool.line
             && tool.status !== 'error' && findOriginCall(candidate.fromId, entriesById, origin => origin.name === 'context_compact') === call);
-        const oldPath = sessionAncestry(branch?.fromId ?? entry.id, entriesById);
+        const fold = branch || tool.status === 'error' ? undefined : entries.find(candidate => isFoldSummary(candidate)
+            && candidate.line > tool.line && candidate.details?.requestEntryId === entry.id);
+        const foldedIds = new Set(fold ? entries.filter(candidate => candidate.type === 'context_edit' && candidate.replacement === null
+            && candidate.line > tool.line && candidate.line < fold.line).map(candidate => candidate.targetId) : []);
+        const boundary = branch ?? fold;
+        const oldPath = sessionAncestry(branch?.fromId ?? fold?.parentId ?? entry.id, entriesById);
         const oldIds = new Set(oldPath.map(ancestor => ancestor.id));
         const nativeBoundary = oldPath.find(ancestor => ancestor.type === 'compaction');
-        if (branch && nativeBoundary) warnings.push(`Line ${tool.line}: prior native compaction makes raw visibility uncertain; removed tools describe historical ancestry, and pre-compaction reads are excluded from reread evidence`);
+        if (boundary && nativeBoundary) warnings.push(`Line ${tool.line}: prior native compaction makes raw visibility uncertain; removed tools describe historical ancestry, and pre-compaction reads are excluded from reread evidence`);
         // Only the actual branch parent proves what was retained. Pending targets are intentions only.
-        let targetId = branch ? branch.parentId ?? null : null;
-        if (!branch && typeof args.target === 'string') {
+        let targetId = branch ? branch.parentId ?? null : fold ? fold.details.targetId ?? null : null;
+        if (!boundary && typeof args.target === 'string') {
             const named = checkpoints.findLast(checkpoint => checkpoint.line <= tool.line && checkpoint.name === args.target);
             targetId = args.target.toLowerCase() === 'root' ? oldPath.findLast(ancestor => ancestor.type !== 'session')?.id ?? null
                 : named?.targetId ?? (entriesById.has(args.target) ? args.target : null);
         }
-        const retainedIds = new Set(branch ? sessionAncestry(branch.parentId, entriesById).map(ancestor => ancestor.id) : []);
-        const removedTools = branch ? tools.filter(candidate => oldIds.has(candidate.entryId) && !retainedIds.has(candidate.entryId)) : [];
+        const retainedIds = new Set(branch ? sessionAncestry(branch.parentId, entriesById).map(ancestor => ancestor.id)
+            : fold ? sessionAncestry(fold.id, entriesById).filter(ancestor => !foldedIds.has(ancestor.id)).map(ancestor => ancestor.id) : []);
+        const removedTools = boundary ? tools.filter(candidate => oldIds.has(candidate.entryId) && !retainedIds.has(candidate.entryId)) : [];
         const target = entriesById.get(targetId);
-        const descendants = [], branchPathIds = new Set(branch ? [branch.id] : []);
+        const descendants = [], branchPathIds = new Set(boundary ? [boundary.id] : []);
         // Session parents precede their children, so descendant membership needs only one file-order pass.
         for (const candidate of entries) {
-            if (branch && candidate.line > branch.line && branchPathIds.has(candidate.parentId)) {
+            if (boundary && candidate.line > boundary.line && branchPathIds.has(candidate.parentId)) {
                 descendants.push(candidate);
                 branchPathIds.add(candidate.id);
             }
@@ -232,7 +243,7 @@ function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
             const previous = tools.filter(candidate => oldIds.has(candidate.entryId) && candidate.family === 'read'
                 && candidate.status === 'success' && candidate.resourceId === current.resourceId
                 && oldIds.has(privateTools.get(candidate.key).resultEntryId)
-                && candidate.resultLine < branch.line
+                && candidate.resultLine < boundary.line
                 // Native retained-tail formats vary; never infer pre-compaction raw visibility from ancestry alone.
                 && (!nativeBoundary || candidate.line > nativeBoundary.line));
             const currentPrivate = privateTools.get(current.key);
@@ -248,19 +259,20 @@ function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
                     match: ['same-resource', 'same-range', 'exact-output'][matchRank(prior) - 1], removed: !retainedIds.has(prior.entryId) });
             }
         }
-        const status = tool.status === 'error' ? 'error' : continuation ? 'resumed' : branch ? 'branched'
+        const status = tool.status === 'error' ? 'error' : continuation ? 'resumed' : branch ? 'branched' : fold ? 'folded'
             : tool.status === 'success' ? 'accepted' : 'requested';
         compactAttempts.push({ key: tool.key, line: tool.line, time: tool.time, callId: tool.callId, status,
-            resultLine: tool.resultLine, branchLine: branch?.line ?? null, continuationLine: continuation?.line ?? null,
+            resultLine: tool.resultLine, branchLine: boundary?.line ?? null, continuationLine: continuation?.line ?? null,
             targetId, targetLine: target?.line ?? null,
-            targetName: checkpoints.findLast(checkpoint => checkpoint.targetId === targetId && checkpoint.line <= (branch?.line ?? tool.line))?.name ?? null,
+            targetName: checkpoints.findLast(checkpoint => checkpoint.targetId === targetId && checkpoint.line <= (boundary?.line ?? tool.line))?.name ?? null,
             summaryChars: branch && typeof branch.summary === 'string' ? branch.summary.length
+                : fold && typeof fold.details.summary === 'string' ? fold.details.summary.length
                 : typeof args.summary === 'string' ? args.summary.length : null,
             removedToolKeys: removedTools.map(candidate => candidate.key),
-            retainedToolCount: branch ? tools.filter(candidate => retainedIds.has(candidate.entryId)).length : null,
+            retainedToolCount: boundary ? tools.filter(candidate => retainedIds.has(candidate.entryId)).length : null,
             followingToolKeys: following.map(candidate => candidate.key), rereads,
             firstWorkToolKey: following.find(candidate => candidate.family !== 'context' && !skillReads.some(read => read.toolKey === candidate.key))?.key ?? null });
-        if (status === 'accepted') warnings.push(`Line ${tool.line}: compact accepted but no branch is recorded; lifecycle is unconfirmed in this snapshot`);
+        if (status === 'accepted') warnings.push(`Line ${tool.line}: compact accepted but no branch or fold is recorded; lifecycle is unconfirmed in this snapshot`);
     }
     const unmatched = tools.filter(tool => tool.status === 'no-result');
     // Legacy records without call IDs are counted, but cannot produce actionable join warnings.
@@ -319,6 +331,7 @@ export function analyzeSessionSnapshot(snapshot) {
                 kind: call?.name === 'context_checkpoint' ? 'checkpoint'
                     : call?.name === 'context_compact' ? 'backup' : 'label' });
         }
+        if (isFoldSummary(entry)) events.push({ ...base, number: events.length + 1, kind: 'pi-context' });
         if (entry.type === 'branch_summary' || entry.type === 'compaction') {
             const call = entry.type === 'branch_summary' && findOriginCall(entry.fromId, entriesById,
                 candidate => candidate.name === 'context_compact');

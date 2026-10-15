@@ -1,8 +1,11 @@
 import {
     type ExtensionAPI,
-    type SessionManager,
+    type ExtensionContext,
+    type SessionBoundaryDraft,
     type SessionEntry,
-    type ExtensionCommandContext,
+    type SessionTreeNode,
+    type ProjectedSessionEntry,
+    type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import {
     Type,
@@ -10,116 +13,32 @@ import {
     type TextContent,
     type ImageContent,
     type ToolCall,
+    type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { describeHistoryInterval, estimateHistoryTokens, formatTokens, formatContextUsage, isContextTool as isInternal, parseCheckpointPhase, RetainedCodemodeOutputType } from "./utils.js";
+import { Box, Text } from "@earendil-works/pi-tui";
+import { CompactionSummaryType, describeHistoryInterval, estimateHistoryTokens, formatTokens, formatContextUsage, isContextTool as isInternal, isEditableContextEntry, parseCheckpointPhase, RetainedCodemodeOutputType } from "./utils.js";
 
-// Define missing types locally as they are not exported from the main entry point
-interface SessionTreeNode {
-    entry: SessionEntry;
-    children: SessionTreeNode[];
-    label?: string;
-}
+type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
 const PiContextCustomMessageType = "pi-context";
 
-const PassiveCompactionEntryTypes = new Set<SessionEntry["type"]>([
-    "custom",
-    "label",
-    "session_info",
-    "model_change",
-    "thinking_level_change",
-]);
-
-// Pi >= 0.99 records nested calls on the parent result, not as transcript messages.
-// Keep this shape local so direct calls remain compatible with older Pi SDKs.
-interface CompactNestedCallRecord {
-    calls: { id: string; name: string; status: string }[];
-}
-
-// Retain only a successful parent result with one identifiable successful compact.
-// Other nested tools/models and omitted arguments are safe because the entire
-// parent output is carried forward; missing or ambiguous compact records cancel.
-const findCodemodeCompactResult = (
-    branch: readonly SessionEntry[],
-    compactToolCallId: string,
-    codemodeToolCallId: string,
-) => {
-    const results = branch.filter((entry) => entry.type === "message" &&
-        entry.message.role === "toolResult" && entry.message.toolName === "codemode" &&
-        entry.message.toolCallId === codemodeToolCallId);
-    if (results.length !== 1) return undefined;
-    const result = results[0];
-    if (result.type !== "message" || result.message.role !== "toolResult" || result.message.isError) return undefined;
-    const record = (result.message as typeof result.message & { nestedCalls?: CompactNestedCallRecord }).nestedCalls;
-    if (!Array.isArray(record?.calls)) return undefined;
-    const compactCalls = record.calls.filter((call) => call.name === "context_compact");
-    if (compactCalls.length !== 1 || compactCalls[0].id !== compactToolCallId ||
-        compactCalls[0].status !== "ok") return undefined;
-    return { entry: result, message: result.message };
-};
-
-/**
- * Detect conversation advancement since the compact request, not agent_end.
- * A successful codemode result can be retained in full; other contextual
- * entries still cancel because the handoff summary does not account for them.
- */
-export const didConversationAdvance = (
-    branch: readonly SessionEntry[],
-    requestLeaf: string | null,
-    compactToolCallId?: string,
-    codemodeToolCallId?: string,
-): boolean => {
-    if (!requestLeaf) return true;
-
-    const requestIndex = branch.findIndex((entry) => entry.id === requestLeaf);
-    if (requestIndex === -1) return true;
-
-    const tail = branch.slice(requestIndex + 1);
-    const codemodeResult = codemodeToolCallId && compactToolCallId
-        ? findCodemodeCompactResult(tail, compactToolCallId, codemodeToolCallId) : undefined;
-    if (codemodeToolCallId) {
-        const request = branch[requestIndex];
-        if (!codemodeResult || request.type !== "message" || request.message.role !== "assistant") return true;
-        const calls = request.message.content.filter((block) => block.type === "toolCall");
-        if (calls.length !== 1 || calls[0].id !== codemodeToolCallId || calls[0].name !== "codemode") return true;
-    }
-    return tail.some((entry) => {
-        if (PassiveCompactionEntryTypes.has(entry.type)) return false;
-        if (compactToolCallId && entry.type === "message") {
-            const message = entry.message;
-            if (message.role === "toolResult" && !message.isError) {
-                if (!codemodeToolCallId && message.toolName === "context_compact" &&
-                    message.toolCallId === compactToolCallId) return false;
-                if (entry === codemodeResult?.entry) return false;
-            }
-            if (message.role === "assistant" && message.content.length === 0 &&
-                (message.stopReason === "aborted" ||
-                    (message.stopReason === "error" && message.errorMessage === "This operation was aborted"))) return false;
-        }
-        return true;
-    });
-};
-
-// Match codemode's documented <parent id>/<n> IDs against actual transcript calls;
-// parent IDs are opaque and may themselves contain slashes. Never fall back to the leaf.
-const findCompactRequest = (branch: readonly SessionEntry[], toolCallId: string) => {
+// Locate the assistant message whose tool call requested compaction. Nested calls
+// (codemode scripts or other tools using ctx.executeTool) get Pi-assigned IDs of
+// the form <parent id>/<n>; parent IDs are opaque and may contain slashes.
+const findCompactRequest = (branch: readonly SessionEntry[], toolCallId: string): string | undefined => {
     for (let i = branch.length - 1; i >= 0; i--) {
         const entry = branch[i];
         if (entry.type !== "message" || entry.message.role !== "assistant") continue;
         for (const block of entry.message.content) {
             if (block.type !== "toolCall") continue;
-            if (block.id === toolCallId && block.name === "context_compact") {
-                return { requestLeaf: entry.id, codemodeToolCallId: undefined };
-            }
-            if (block.name === "codemode" && toolCallId.startsWith(`${block.id}/`) &&
-                /^\d+$/.test(toolCallId.slice(block.id.length + 1))) {
-                return { requestLeaf: entry.id, codemodeToolCallId: block.id };
-            }
+            if (block.id === toolCallId && block.name === "context_compact") return entry.id;
+            if (toolCallId.startsWith(`${block.id}/`) &&
+                /^\d+(\/\d+)*$/.test(toolCallId.slice(block.id.length + 1))) return entry.id;
         }
     }
 };
 
-const resolveTargetId = (sm: SessionManager, target: string): string => {
+const resolveTargetId = (sm: ReadonlySessionManager, target: string): string => {
     if (target.toLowerCase() === "root") {
         const tree = sm.getTree();
         return tree.length > 0 ? tree[0].entry.id : target;
@@ -129,16 +48,34 @@ const resolveTargetId = (sm: SessionManager, target: string): string => {
     if (/^[0-9a-f]{8,}$/i.test(target)) return target;
 
     // Iterative DFS to avoid call stack overflows on deep histories.
-    const stack: SessionTreeNode[] = [...(sm.getTree() as unknown as SessionTreeNode[])];
+    const stack: SessionTreeNode[] = [...sm.getTree()];
     while (stack.length > 0) {
         const n = stack.pop()!;
         if (sm.getLabel(n.entry.id) === target) return n.entry.id;
         if (n.children?.length) stack.push(...n.children);
     }
 
-    // Fallback: let SessionManager deal with invalid targets downstream.
+    // Fallback: validation reports targets that are not on the active path.
     return target;
 };
+
+/**
+ * Locate a compaction target in the current model context. Pi's native compaction
+ * replaces history before its kept range with a summary that cannot be omitted, so
+ * a target there cannot keep exactly "everything up to the target". Root means the
+ * start of the current context. Returns the context-ordered projection and index.
+ */
+const locateContextTarget = (sm: ReadonlySessionManager, targetId: string, root: boolean) => {
+    const projection = sm.buildSessionProjection().entries;
+    if (root) return { projection, index: -1 };
+    const index = projection.findIndex((entry) => entry.sourceEntry.id === targetId);
+    if (index < 0) return { projection, index, reason: "outside" as const };
+    if (isFoldedEntry(projection[index])) return { projection, index, reason: "folded" as const };
+    return { projection, index };
+};
+
+/** Folded by an earlier compaction: editable and selected, but contributing no model messages. */
+const isFoldedEntry = (entry: ProjectedSessionEntry) => !entry.messages.length && isEditableContextEntry(entry.sourceEntry);
 
 const ContextTimelineDescription = "Inspect the active conversation path as a structural map: checkpoints, summaries/compactions, branch points, user turns, and current position. Use when orientation or compact target selection depends on the shape of history. Folded intervals show historical token estimates, not reclaimable space.";
 const ContextTimelineParams = Type.Object({
@@ -146,11 +83,11 @@ const ContextTimelineParams = Type.Object({
     verbose: Type.Optional(Type.Boolean({ description: "If true, show all messages including internal context-tool traffic. If false (default), collapse to structural milestones." })),
 });
 
-const ContextCompactDescription = "Create a summarized continuation branch from an earlier checkpoint or history node. The selected target is the branch point; the summary must restore the useful state from the compacted path after that target. This changes conversation history only; it does not modify or roll back disk files or external systems.";
+const ContextCompactDescription = "Compact the conversation after an earlier checkpoint or history node into a summarized continuation. The selected target is where the continuation starts; the summary must restore the useful state from the compacted path after that target. This changes conversation history only; it does not modify or roll back disk files or external systems.";
 const ContextCompactParams = Type.Object({
-    target: Type.String({ description: "Checkpoint name, history node ID, or root to use as the branch point for the summarized continuation." }),
-    summary: Type.String({ description: "Handoff summary injected into the new continuation branch. Restore current task/state, decisions/constraints, important external side effects (changed files, processes, browser/tickets/remote state), validation status, source anchors/evidence/open questions likely needed soon, and explicit next step. Do not rely on backupCheckpoint for details needed in the next phase." }),
-    backupCheckpoint: Type.Optional(Type.String({ description: "Optional checkpoint name to label the current conversation state before branching. This is only a recovery pointer; the summary must still contain the state needed to continue." })),
+    target: Type.String({ description: "Checkpoint name, history node ID, or root to use as the starting point for the summarized continuation." }),
+    summary: Type.String({ description: "Handoff summary injected into the summarized continuation. Restore current task/state, decisions/constraints, important external side effects (changed files, processes, browser/tickets/remote state), validation status, source anchors/evidence/open questions likely needed soon, and explicit next step. Do not rely on backupCheckpoint for details needed in the next phase." }),
+    backupCheckpoint: Type.Optional(Type.String({ description: "Optional checkpoint name to label the current conversation state before compacting. This is only a recovery pointer; the summary must still contain the state needed to continue." })),
 });
 
 const ContextCheckpointDescription = "Create a named anchor by labeling a conversation history node. This does not branch, summarize, or affect external state; it only makes the point easy to find later in timeline or compact target selection.";
@@ -160,77 +97,145 @@ const ContextCheckpointParams = Type.Object({
 });
 
 interface PendingCompactRequest extends Static<typeof ContextCompactParams> {
-    tid: string;
-    enrichedMessage: string;
-    usageBeforeText: string;
-    requestLeaf: string;
-    toolCallId: string;
-    codemodeToolCallId?: string;
+    targetId: string;
+    /** Root folds the whole current context. */
+    root: boolean;
+    requestEntryId: string;
     invalidated?: boolean;
 }
 
-export default function (pi: ExtensionAPI) {
-    let CommandCtx: ExtensionCommandContext | null = null;
-    let CompactParams: PendingCompactRequest | null = null;
-    let runtimeActive = true;
-    let pendingCommandContext: Promise<ExtensionCommandContext> | null = null;
-    let resolveCommandContext: ((ctx: ExtensionCommandContext) => void) | undefined;
-    let rejectCommandContext: ((error: Error) => void) | undefined;
+export interface CompactionDetails {
+    target: string;
+    targetId: string;
+    requestEntryId: string;
+    summary: string;
+    folded: number;
+    foldedTokens: number;
+    retained: number;
+    backupCheckpoint?: string;
+}
 
-    // sendUserMessage is fire-and-forget. Resolve from the command handler,
-    // rather than assuming command dispatch has completed when it returns.
-    async function ensureCommandContext(): Promise<ExtensionCommandContext> {
-        if (CommandCtx) return CommandCtx;
-        if (pendingCommandContext) return pendingCommandContext;
+// Context tool results describe pre-fold state; a script whose recorded calls were
+// all context tools is management traffic too. Anything else is kept as task output.
+const isManagementResult = (result: ToolResultMessage) => {
+    if (isInternal(result.toolName)) return true;
+    const record = result.nestedCalls;
+    return record?.complete === true && record.calls.length > 0 &&
+        record.calls.every((call) => isInternal(call.name));
+};
 
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        pendingCommandContext = new Promise<ExtensionCommandContext>((resolve, reject) => {
-            resolveCommandContext = resolve;
-            rejectCommandContext = reject;
-            timeout = setTimeout(() => reject(new Error(
-                "context_compact: automatic command context acquisition timed out. Requires Pi >= 0.84.2 with extension command dispatch support.",
-            )), 5000);
-            pi.sendUserMessage("/acm", {
-                deliverAs: "followUp",
-                expandPromptTemplates: true,
-            });
-        });
-        try {
-            return await pendingCommandContext;
-        } finally {
-            clearTimeout(timeout);
-            pendingCommandContext = null;
-            resolveCommandContext = undefined;
-            rejectCommandContext = undefined;
+const truncate = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
+
+/**
+ * Fold history at the end of the step that requested compaction. turn_end runs after
+ * every tool result of that step is persisted and before steering or the next request,
+ * so the step is complete and nothing else can interleave. The request message and its
+ * results are folded together, so no tool call or result is orphaned.
+ */
+const planCompaction = (
+    sm: ReadonlySessionManager,
+    request: PendingCompactRequest,
+    event: Pick<TurnEndEvent, "message" | "toolResults">,
+): { entries: SessionBoundaryDraft[]; details: CompactionDetails } | { error: string } => {
+    const { projection, index: targetIndex, reason } = locateContextTarget(sm, request.targetId, request.root);
+    if (reason) return { error: "the target is no longer in the current conversation." };
+
+    // Keep results answering calls of the last assistant message at or before the target.
+    const keptCalls = new Set<string>();
+    for (let i = targetIndex; i >= 0; i--) {
+        const entry = projection[i].sourceEntry;
+        if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+        for (const block of entry.message.content) if (block.type === "toolCall") keptCalls.add(block.id);
+        break;
+    }
+    // Context order, not raw order: a native compaction summary leads the context.
+    // Non-editable entries (system loadout, user bash, branch summaries, native
+    // compaction) stay visible; Pi cannot omit them and they carry required state.
+    const folded = projection.slice(targetIndex + 1).flatMap(({ sourceEntry, messages }) => {
+        if (!messages.length || !isEditableContextEntry(sourceEntry)) return [];
+        if (sourceEntry.type === "message" && sourceEntry.message.role === "toolResult" &&
+            keptCalls.has(sourceEntry.message.toolCallId)) return [];
+        return [sourceEntry];
+    });
+
+    const calls = new Map<string, ToolCall>();
+    if (event.message.role === "assistant") {
+        for (const block of event.message.content) if (block.type === "toolCall") calls.set(block.id, block);
+    }
+    const retained = event.toolResults.filter((result) => !isManagementResult(result));
+    const label = (result: ToolResultMessage) => {
+        const call = calls.get(result.toolCallId);
+        // Script source is not output; other calls need their arguments to be interpretable.
+        const args = call && result.toolName !== "codemode" ? ` ${truncate(JSON.stringify(call.arguments), 300)}` : "";
+        return `[${result.toolName}${args}]${result.isError ? " (error)" : ""}`;
+    };
+    const backup = request.backupCheckpoint ? ` (backup checkpoint: ${request.backupCheckpoint})` : "";
+    const content: (TextContent | ImageContent)[] = [{
+        type: "text",
+        text: `context_compact complete. Your previous conversation after ${request.target} was summarized${backup}. Read the handoff summary to understand your new state.\n\n${request.summary}`,
+    }];
+    if (retained.length) {
+        content.push({ type: "text", text: "\n\nOutput from tool calls that already completed together with context_compact. Do not rerun their completed operations. The handoff summary above covers earlier history, not this output." });
+        for (const result of retained) {
+            content.push({ type: "text", text: `\n${label(result)}\n` }, ...result.content);
         }
     }
+    content.push({ type: "text", text: "\n\nExecute the Next Step from the summary." });
+
+    const details: CompactionDetails = {
+        target: request.target, targetId: request.targetId, requestEntryId: request.requestEntryId,
+        summary: request.summary, folded: folded.length,
+        foldedTokens: folded.reduce((sum, entry) => sum + estimateHistoryTokens(entry), 0),
+        retained: retained.length, backupCheckpoint: request.backupCheckpoint,
+    };
+    return {
+        entries: [
+            ...folded.map((entry): SessionBoundaryDraft => ({ type: "context_edit", targetId: entry.id, replacement: null })),
+            { type: "custom_message", customType: CompactionSummaryType, content, display: true, details },
+        ],
+        details,
+    };
+};
+
+export default function (pi: ExtensionAPI) {
+    let pendingCompact: PendingCompactRequest | null = null;
+
+    const notice = (text: string): SessionBoundaryDraft => ({
+        type: "custom_message", customType: PiContextCustomMessageType, content: text, display: false,
+    });
 
     pi.on("session_shutdown", () => {
-        runtimeActive = false;
-        CommandCtx = null;
-        CompactParams = null;
-        rejectCommandContext?.(new Error("context_compact: session closed while acquiring command context."));
+        pendingCompact = null;
     });
 
     pi.registerCommand("acm", {
-        description: "Enable agentic context management for the current session",
+        description: "Compatibility command: agentic context management is always enabled",
         handler: async (args, ctx) => {
-            CommandCtx = ctx;
-            if (resolveCommandContext) {
-                resolveCommandContext(ctx);
-            } else {
-                ctx.ui.notify("Agentic Context Management enabled.", "info");
-            }
-            if (args) {
-                pi.sendUserMessage(args, { deliverAs: "followUp" });
-            }
+            if (args) pi.sendUserMessage(args, { deliverAs: "followUp" });
+            else ctx.ui.notify("Agentic Context Management is always enabled.", "info");
         }
+    });
+
+    pi.registerMessageRenderer<CompactionDetails>(CompactionSummaryType, (message, { expanded, outputPad }, theme) => {
+        const details = message.details;
+        const title = theme.fg("accent", theme.bold("Context compacted")) + (details
+            ? theme.fg("muted", ` to ${details.target} · ${details.folded} entries (~${formatTokens(details.foldedTokens)} tokens)` +
+                (details.retained ? ` · kept ${details.retained} tool outputs` : "") +
+                (details.backupCheckpoint ? ` · backup: ${details.backupCheckpoint}` : ""))
+            : "");
+        const body = expanded || !details
+            ? (typeof message.content === "string" ? message.content
+                : message.content.map((block) => block.type === "text" ? block.text : "[image]").join(""))
+            : details.summary;
+        const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
+        box.addChild(new Text(`${title}\n${body}`, 0, 0));
+        return box;
     });
 
     // Helper: Check if a checkpoint name already exists in the tree
     // Iterative DFS to avoid call stack overflows on deep histories.
     // Push children in reverse order to preserve left-to-right pre-order semantics.
-    const findCheckpointInTree = (sm: SessionManager, nodes: SessionTreeNode[], checkpointName: string): string | null => {
+    const findCheckpointInTree = (sm: ReadonlySessionManager, nodes: SessionTreeNode[], checkpointName: string): string | null => {
         const stack: SessionTreeNode[] = [...nodes].reverse();
         while (stack.length > 0) {
             const n = stack.pop()!;
@@ -250,7 +255,7 @@ export default function (pi: ExtensionAPI) {
         description: ContextCheckpointDescription,
         parameters: ContextCheckpointParams,
         async execute(_id, params: Static<typeof ContextCheckpointParams>, _signal, _onUpdate, ctx) {
-            const sm = ctx.sessionManager as SessionManager;
+            const sm = ctx.sessionManager;
 
             // Deduplication check: ensure checkpoint name is unique
             const existingCheckpointId = findCheckpointInTree(sm, sm.getTree(), params.name);
@@ -318,20 +323,41 @@ export default function (pi: ExtensionAPI) {
         description: ContextTimelineDescription,
         parameters: ContextTimelineParams,
         async execute(_id, params: Static<typeof ContextTimelineParams>, _signal, _onUpdate, ctx) {
-            const sm = ctx.sessionManager as SessionManager;
+            const sm = ctx.sessionManager;
             const branch = sm.getBranch();
             const currentLeafId = sm.getLeafId();
+            // The read-only manager has no getChildren; index children from the tree once.
+            const childrenById = new Map<string, SessionEntry[]>();
+            for (const stack = [...sm.getTree()]; stack.length;) {
+                const node = stack.pop()!;
+                childrenById.set(node.entry.id, node.children.map((child) => child.entry));
+                stack.push(...node.children);
+            }
+            const getChildren = (id: string) => childrenById.get(id) ?? [];
             const verbose = params.verbose ?? false;
             const limit = params.limit ?? 50;
 
             const backboneIds = new Set(branch.map((e) => e.id));
+            const projection = sm.buildSessionProjection().entries;
+            const foldedIds = new Set(projection.filter(isFoldedEntry).map((entry) => entry.sourceEntry.id));
+            // Active-path history Pi's native compaction replaced with its summary: not compact targets.
+            const contextIds = new Set(projection.map((entry) => entry.sourceEntry.id));
+            let nativeIndex = -1;
+            branch.forEach((entry, index) => { if (entry.type === "compaction") nativeIndex = index; });
+            // Root stays a valid target: it means the start of the current context.
+            const summarizedIds = new Set(branch.slice(1, Math.max(nativeIndex, 0))
+                .filter((entry) => !contextIds.has(entry.id)).map((entry) => entry.id));
+            const hiddenKind = (id: string) => foldedIds.has(id) || summarizedIds.has(id) ? "compacted: " : "";
             const sequence: SessionEntry[] = [];
+            const isTaskMessage = (entry: SessionEntry) => entry.type === "custom_message" &&
+                (entry.customType === RetainedCodemodeOutputType || entry.customType === CompactionSummaryType);
 
             branch.forEach((entry) => {
-                sequence.push(entry);
+                // Context edits are bookkeeping; folded entries are marked on their targets.
+                if (entry.type !== "context_edit" || entry.id === currentLeafId) sequence.push(entry);
 
                 // Preserve side-summary logic: Show branch summaries/compactions that are off-path
-                const children = sm.getChildren(entry.id);
+                const children = getChildren(entry.id);
                 children.forEach((child) => {
                     if ((child.type === "branch_summary" || child.type === "compaction") && !backboneIds.has(child.id)) {
                         sequence.push(child);
@@ -346,6 +372,12 @@ export default function (pi: ExtensionAPI) {
                 }
                 if (entry.type === "label") {
                     return `checkpoint: ${entry.label}`;
+                }
+                if (entry.type === "custom_message" && entry.customType === CompactionSummaryType) {
+                    const details = entry.details as CompactionDetails | undefined;
+                    return details
+                        ? `(compacted ${details.folded} entries after ${details.target} · ~${formatTokens(estimateHistoryTokens(entry))} tokens) ${details.summary}`
+                        : `(compaction summary) ${typeof entry.content === "string" ? entry.content : ""}`;
                 }
                 if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
                     const text = typeof entry.content === "string" ? entry.content
@@ -418,12 +450,15 @@ export default function (pi: ExtensionAPI) {
                 if (sm.getLabel(entry.id)) return true;
                 if (entry.type === 'label') return false; // Hide label nodes, they are redundant
 
+                // Folded history is summarized; only its checkpoints stay visible (marked folded).
+                if (foldedIds.has(entry.id) || summarizedIds.has(entry.id)) return false;
+
                 // 3. Structural Milestones (Summaries)
                 if (entry.type === 'branch_summary' || entry.type === 'compaction') return true;
-                if (entry.type === 'custom_message' && entry.customType === RetainedCodemodeOutputType) return true;
+                if (isTaskMessage(entry)) return true;
 
                 // 4. Branch Points (Forks)
-                if (sm.getChildren(entry.id).length > 1) return true;
+                if (getChildren(entry.id).length > 1) return true;
 
                 // 5. Natural Milestones (User Messages) - This is the key auto-tagging mechanism
                 if (entry.type === 'message' && entry.message.role === 'user') return true;
@@ -447,8 +482,11 @@ export default function (pi: ExtensionAPI) {
 
             const lines: string[] = [];
             let hiddenEntries: SessionEntry[] = [];
+            let hiddenGroup = "";
             const flushHidden = () => {
-                if (hiddenEntries.length) lines.push(`  :  ... (${describeHistoryInterval(hiddenEntries)}) ...`);
+                if (hiddenEntries.length) {
+                    lines.push(`  :  ... (${hiddenGroup}${describeHistoryInterval(hiddenEntries)}) ...`);
+                }
                 hiddenEntries = [];
             };
 
@@ -456,7 +494,13 @@ export default function (pi: ExtensionAPI) {
                 if (!visibleSequenceIds.has(entry.id)) {
                     // Off-path summaries never contribute to active-path intervals.
                     if (backboneIds.has(entry.id) && entry.type !== "custom" && entry.type !== "label" &&
-                        (entry.type !== "custom_message" || entry.customType === RetainedCodemodeOutputType)) hiddenEntries.push(entry);
+                        (entry.type !== "custom_message" || isTaskMessage(entry))) {
+                        // Folded, natively summarized and live history are reported as separate intervals.
+                        const group = hiddenKind(entry.id);
+                        if (group !== hiddenGroup) flushHidden();
+                        hiddenGroup = group;
+                        hiddenEntries.push(entry);
+                    }
                     return;
                 }
 
@@ -477,7 +521,8 @@ export default function (pi: ExtensionAPI) {
                                 : m.role === "bashExecution"
                                     ? "BASH"
                                     : "TOOL";
-                } else if (entry.type === "branch_summary" || entry.type === "compaction") {
+                } else if (entry.type === "branch_summary" || entry.type === "compaction" ||
+                    (entry.type === "custom_message" && entry.customType === CompactionSummaryType)) {
                     role = "SUMMARY";
                 } else if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
                     role = "TOOL";
@@ -493,6 +538,7 @@ export default function (pi: ExtensionAPI) {
                 const stage = label ? parseCheckpointPhase(label)?.phase : undefined;
                 const meta = [isRoot ? "ROOT" : null, isHead ? "HEAD" : null,
                     !backboneIds.has(id) ? "off-path" : null,
+                    foldedIds.has(id) || summarizedIds.has(id) ? "compacted: not a compact target" : null,
                     label ? `checkpoint: ${label}` : null,
                     stage ? `phase: ${stage}` : null].filter(Boolean).join(", ");
 
@@ -515,219 +561,84 @@ export default function (pi: ExtensionAPI) {
         label: "Context Compact",
         description: ContextCompactDescription,
         parameters: ContextCompactParams,
-        async execute(_id, params: Static<typeof ContextCompactParams>, _signal, _onUpdate, ctx) {
-            // Anchor at the assistant request (or its codemode script), not the
-            // current leaf: sibling tools/hooks may already have appended entries.
-            const request = findCompactRequest(ctx.sessionManager.getBranch(), _id);
-            if (!request) {
+        async execute(toolCallId, params: Static<typeof ContextCompactParams>, _signal, _onUpdate, ctx) {
+            const sm = ctx.sessionManager;
+            const branch = sm.getBranch();
+            const requestEntryId = findCompactRequest(branch, toolCallId);
+            if (!requestEntryId) {
                 throw new Error("context_compact: cannot locate the requesting tool call in session history.");
             }
-            await ensureCommandContext();
-            if (!runtimeActive || _signal?.aborted) {
-                throw new Error("context_compact: cancelled before compaction started.");
+            // Parallel or repeated requests in one step are ambiguous: cancel both.
+            if (pendingCompact?.requestEntryId === requestEntryId) {
+                pendingCompact.invalidated = true;
+                throw new Error("context_compact: only one compact request is allowed at a time; neither request will compact.");
             }
-            const sm = ctx.sessionManager as SessionManager;
-            const usageBeforeText = formatContextUsage(ctx.getContextUsage());
-
-            if (CompactParams && (request.codemodeToolCallId || CompactParams.codemodeToolCallId)) {
-                CompactParams.invalidated = true;
-                throw new Error("context_compact: only one compact request is allowed per codemode script.");
+            const root = params.target.toLowerCase() === "root";
+            const targetId = resolveTargetId(sm, params.target);
+            if (!sm.getEntry(targetId)) {
+                throw new Error(`context_compact: target ${params.target} was not found; use a checkpoint name, an entry ID from context_timeline, or root.`);
             }
-            const tid = resolveTargetId(sm, params.target);
-            if (request.codemodeToolCallId) {
-                const branch = sm.getBranch();
-                const targetIndex = branch.findIndex((entry) => entry.id === tid);
-                const requestIndex = branch.findIndex((entry) => entry.id === request.requestLeaf);
-                if (targetIndex < 0 || targetIndex >= requestIndex) {
-                    throw new Error("context_compact: codemode target must precede the script on the active path.");
-                }
+            const targetIndex = branch.findIndex((entry) => entry.id === targetId);
+            if (targetIndex < 0 || targetIndex >= branch.findIndex((entry) => entry.id === requestEntryId)) {
+                throw new Error(`context_compact: target ${params.target} is not earlier in the current conversation; choose a checkpoint from context_timeline or root.`);
             }
-
-            const currentLeaf = sm.getLeafId();
-            if (currentLeaf === tid) {
-                return { content: [{ type: "text", text: `Already at target ${tid}` }], details: {} };
+            const { reason } = locateContextTarget(sm, targetId, root);
+            // Folding after an already-folded target would also drop the summary that covers it.
+            if (reason === "folded") {
+                throw new Error(`context_compact: target ${params.target} is inside history that was already compacted; choose a later checkpoint from context_timeline or root.`);
             }
-            if (params.backupCheckpoint && currentLeaf) {
-                pi.setLabel(currentLeaf, params.backupCheckpoint);
+            if (reason === "outside") {
+                throw new Error(`context_compact: target ${params.target} is inside history that was already compacted; choose a later checkpoint from context_timeline or root.`);
             }
-            const currentLabel = currentLeaf ? sm.getLabel(currentLeaf) : undefined;
-            const origin = currentLabel ? `checkpoint: ${currentLabel}` : (currentLeaf || "unknown");
-
-            const enrichedMessage = `(handoff summary from ${origin})\n${params.summary}`;
-
-            // Awaiting this tool only schedules compaction. In codemode, all calls
-            // before and after it finish before history switches; its position
-            // within the script does not split the output or rerun operations.
-            CompactParams = {
-                ...params, tid, enrichedMessage, usageBeforeText,
-                requestLeaf: request.requestLeaf,
-                toolCallId: _id,
-                codemodeToolCallId: request.codemodeToolCallId,
+            pendingCompact = { ...params, targetId, root, requestEntryId };
+            return {
+                content: [{
+                    type: "text",
+                    text: "compact start",
+                }],
+                details: {},
             };
-
-            return { content: [{ type: "text", text: "compact start" }], details: {} };
         },
     });
 
-    pi.on("turn_end", async (_event, ctx) => {
-        if (!CompactParams) {
-            return
+    pi.on("turn_end", async (event, ctx) => {
+        const request = pendingCompact;
+        if (!request) return;
+        pendingCompact = null;
+        const cancel = (reason: string, retry = true) => {
+            ctx.ui.notify(`context_compact cancelled: ${reason}`, "warning");
+            const next = retry ? " If still useful, inspect timeline and retry with an updated summary." : "";
+            return { entries: [...event.entries, notice(`context_compact cancelled: ${reason}\nNo compaction was applied; continue from the current path.${next}`)] };
+        };
+        if (request.requestEntryId !== event.messageEntryId) return cancel("the request did not complete normally.");
+        if (request.invalidated) return cancel("more than one compact request was made.");
+        // A tool step interrupted by the user still reports a completed assistant message.
+        if (ctx.signal?.aborted || event.outcome !== "completed") return cancel("the request was interrupted.", false);
+        const usageBefore = formatContextUsage(ctx.getContextUsage());
+        const plan = planCompaction(ctx.sessionManager, request, event);
+        if ("error" in plan) return cancel(plan.error);
+        if (request.backupCheckpoint) {
+            pi.setLabel(event.toolResultEntryIds.at(-1) ?? event.messageEntryId, request.backupCheckpoint);
         }
-        ctx.abort()
+        const { details } = plan;
+        ctx.ui.notify([
+            `Compacted to ${details.target} (${details.folded} entries, ~${formatTokens(details.foldedTokens)} tokens)` +
+                (details.retained ? `, kept ${details.retained} tool outputs` : ""),
+            `Context usage before: ${usageBefore}`,
+            `Backup checkpoint created: ${details.backupCheckpoint || "none"}`,
+        ].join("\n"), "info");
+        return { entries: [...event.entries, ...plan.entries], continue: true };
     });
 
+    // turn_end consumes every request; one left here never reached its step boundary.
     pi.on("agent_end", async (_event, ctx) => {
-        if (!CompactParams) {
-            return
-        }
-        if (!CommandCtx) {
-            return
-        }
-
-        const sm = ctx.sessionManager as SessionManager;
-        const compactParams = CompactParams;
-        const commandCtx = CommandCtx;
-        CompactParams = null;
-        const requestLeaf = compactParams.requestLeaf;
-
-        // `agent_end` is emitted before the core Agent is actually idle. If we
-        // call pi.sendMessage({ triggerTurn: true }) inside this handler, pi still
-        // sees an active stream and queues the message as steering; after
-        // `agent_end` the loop has already stopped, so that queued message is not
-        // drained. Defer navigation + continuation until the current run settles.
-        setTimeout(async () => {
-            try {
-                if (!runtimeActive) return;
-                await commandCtx.waitForIdle();
-                if (!runtimeActive) return;
-
-                // Check unaccounted context after idle, before creating the branch.
-                // This is not atomic across Pi's awaited session_before_tree hooks.
-                const branch = sm.getBranch();
-                if (compactParams.invalidated || ctx.hasPendingMessages() ||
-                    didConversationAdvance(branch, requestLeaf, compactParams.toolCallId, compactParams.codemodeToolCallId)) {
-                    const reason = compactParams.invalidated
-                        ? "more than one compact request was made."
-                        : compactParams.codemodeToolCallId
-                            ? "conversation advanced or codemode did not finish with a verifiable compact result."
-                            : "conversation advanced before compaction completed.";
-                    commandCtx.ui.notify(`context_compact cancelled: ${reason}`, "warning");
-                    pi.sendMessage({
-                        customType: PiContextCustomMessageType,
-                        content: [
-                            `context_compact cancelled: ${reason}`,
-                            "No compaction was applied; continue from the current path. If still useful, inspect timeline and retry with an updated summary.",
-                        ].join("\n"),
-                        display: false,
-                    }, {
-                        triggerTurn: true,
-                        deliverAs: "followUp",
-                    });
-                    return;
-                }
-
-                const originalLeaf = sm.getLeafId()!;
-                let nid: string;
-                try {
-                    let summaryTarget = compactParams.tid;
-                    if (compactParams.codemodeToolCallId) {
-                        const result = findCodemodeCompactResult(
-                            branch.slice(branch.findIndex((entry) => entry.id === requestLeaf) + 1),
-                            compactParams.toolCallId, compactParams.codemodeToolCallId,
-                        )!;
-                        // Model context: prefix through target -> full output -> summary.
-                        // Copy returned text/images as-is, including truncation notices
-                        // and paths, not script source or unprinted intermediate values.
-                        // A provenance-linked custom message leaves the original calls
-                        // recoverable without duplicating billable assistant/tool results.
-                        sm.branch(compactParams.tid);
-                        sm.appendCustomMessageEntry(RetainedCodemodeOutputType, [
-                            { type: "text", text: "Output from the codemode script that already completed before compaction. Do not rerun its completed operations. The following handoff summary covers earlier history, not this output." },
-                            ...result.message.content,
-                        ], false, { requestEntryId: requestLeaf, resultEntryId: result.entry.id });
-                        // Preserve store state with one net delta, not copies of its
-                        // write log: repeated old-target compacts must not amplify it.
-                        // Delete-then-set matches Pi's replay; Map keeps special keys safe.
-                        const targetIndex = branch.findIndex((entry) => entry.id === compactParams.tid);
-                        const prefixKeys = new Set<string>();
-                        const writes = new Map<string, unknown>(), deletes = new Set<string>();
-                        for (let index = 0; index < branch.length; index++) {
-                            const entry = branch[index];
-                            if (entry.type !== "custom" || entry.customType !== "codemode-store") continue;
-                            const data = entry.data;
-                            // Ignore malformed entries just as Pi's readCodemodeStore does.
-                            if (typeof data !== "object" || data === null ||
-                                !("set" in data) || !("delete" in data) ||
-                                typeof data.set !== "object" || data.set === null ||
-                                !Array.isArray(data.delete) || !data.delete.every((key: unknown) => typeof key === "string")) continue;
-                            if (index <= targetIndex) {
-                                for (const key of data.delete) prefixKeys.delete(key);
-                                for (const key of Object.keys(data.set)) prefixKeys.add(key);
-                                continue;
-                            }
-                            for (const key of data.delete) {
-                                writes.delete(key);
-                                deletes.add(key);
-                            }
-                            for (const [key, value] of Object.entries(data.set)) {
-                                writes.set(key, value);
-                                deletes.delete(key);
-                            }
-                        }
-                        // Keys created and removed after target need no tombstone.
-                        const deleted = [...deletes].filter(key => prefixKeys.has(key));
-                        if (writes.size || deleted.length) {
-                            sm.appendCustomEntry("codemode-store", { set: Object.fromEntries(writes), delete: deleted });
-                        }
-                        summaryTarget = sm.getLeafId()!;
-                        sm.branch(originalLeaf);
-                    }
-                    nid = sm.branchWithSummary(summaryTarget, compactParams.enrichedMessage);
-                } finally {
-                    // Rebuild from the original live path. Navigating a custom
-                    // message would move it to the editor; the summary is the leaf.
-                    sm.branch(originalLeaf);
-                }
-                const navigation = await commandCtx.navigateTree(nid, { summarize: false });
-                if (!runtimeActive) return;
-                if (navigation.cancelled) {
-                    throw new Error("tree navigation was cancelled; the original path was retained.");
-                }
-
-                const usageAfter = commandCtx.getContextUsage();
-                commandCtx.ui.notify([
-                    `Compacted to ${compactParams.target}${compactParams.target === compactParams.tid ? "" : `(${compactParams.tid})`}`,
-                    `Context Usage: ${compactParams.usageBeforeText} -> ${formatContextUsage(usageAfter)}`,
-                    `Backup checkpoint created: ${compactParams.backupCheckpoint || "none"}`,
-                    `Summary: ${compactParams.enrichedMessage}`,
-                ].join("\n"), "info");
-
-                pi.sendMessage({
-                    customType: PiContextCustomMessageType,
-                    content: compactParams.codemodeToolCallId
-                        ? "context_compact complete. Your previous history was summarized. Read the retained codemode output and the handoff summary. The script already completed; do not repeat its operations or a Next Step it has already satisfied. Continue with the remaining work."
-                        : "context_compact complete. A handoff summary of your previous conversation path was injected above. Read it to understand your new state. Execute the Next Step from the summary",
-                    display: false,
-                }, {
-                    triggerTurn: true,
-                    deliverAs: "followUp",
-                });
-            } catch (err) {
-                if (!runtimeActive) return;
-                const message = err instanceof Error ? err.message : String(err);
-                commandCtx.ui.notify(`context_compact failed: ${message}`, "error");
-                pi.sendMessage({
-                    customType: PiContextCustomMessageType,
-                    content: [
-                        `context_compact failed: ${message}`,
-                        "Compaction did not finish. Inspect the current path before retrying; a recoverable summary branch may have been created.",
-                    ].join("\n"),
-                    display: false,
-                }, {
-                    triggerTurn: true,
-                    deliverAs: "followUp",
-                });
-            }
-        }, 0);
+        if (!pendingCompact) return;
+        pendingCompact = null;
+        ctx.ui.notify("context_compact cancelled: the request did not complete normally.", "warning");
+        pi.sendMessage({
+            customType: PiContextCustomMessageType,
+            content: "context_compact cancelled: the request did not complete normally.\nNo compaction was applied; continue from the current path.",
+            display: false,
+        }, { deliverAs: "nextTurn" });
     });
 }

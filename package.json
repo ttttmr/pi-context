@@ -10,7 +10,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "analyze:session": "node tools/session-analysis/session-analysis-cli.mjs",
-    "test:live": "node test/live-command-context.mjs",
+    "test:live": "node test/live-compaction.mjs",
+    "test:scenarios": "node test/live-scenarios.mjs",
     "test": "npm run typecheck && rm -rf dist && tsc --declaration false && node --test test/*.test.mjs"
   },
   "keywords": [
@@ -27,9 +28,9 @@
   "author": "ttttmr",
   "license": "MIT",
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.85.1",
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.85.1",
+    "@earendil-works/pi-ai": "^1.2.0",
+    "@earendil-works/pi-coding-agent": "^1.2.0",
+    "@earendil-works/pi-tui": "^1.2.0",
     "typescript": "^5.9.3"
   },
   "pi": {
@@ -48,7 +49,7 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": ">=0.84.2",
+    "@earendil-works/pi-coding-agent": ">=1.2.0",
     "@earendil-works/pi-tui": "*"
   }
 }

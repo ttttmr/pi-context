@@ -27,13 +27,15 @@ pi install npm:pi-context
 
 ### For Humans
 
-ACM (**A**gentic **C**ontext **M**anagement) works automatically with Pi >= 0.84.2. Before compacting, the extension acquires command context if needed; no manual `/acm` is required.
+ACM (**A**gentic **C**ontext **M**anagement) works automatically with Pi >= 1.2.0; no manual `/acm` is required.
 
 `/acm` and `/acm <task>` remain available for compatibility.
 
+After a compaction the transcript shows a "Context compacted" message; earlier messages stay visible, and the backup checkpoint (or `/tree`) returns to the original context.
+
 ### Checkpoint naming and timeline estimates
 
-Use checkpoint names ending in `-start`, `-done`, `-pivot`, `-pause`, or `-resume` to declare a task or phase change, keeping the scope prefix consistent within a phase's lifecycle (for example `parser-investigation-start` → `parser-investigation-done`). Other names remain valid ordinary anchors. Timeline displays the parsed phase next to each label, folds hidden intervals with message counts and approximate tokens using Pi's heuristic, and marks off-path summaries. Interval estimates describe historical content, exclude internal context-management traffic, and are not exact current-model occupancy or reclaimable space.
+Use checkpoint names ending in `-start`, `-done`, `-pivot`, `-pause`, or `-resume` to declare a task or phase change, keeping the scope prefix consistent within a phase's lifecycle (for example `parser-investigation-start` → `parser-investigation-done`). Other names remain valid ordinary anchors. Timeline displays the parsed phase next to each label, folds hidden intervals with message counts and approximate tokens using Pi's heuristic, marks already-compacted history (it cannot be a compact target), and marks off-path summaries. Interval estimates describe historical content, exclude internal context-management traffic, and are not exact current-model occupancy or reclaimable space.
 
 Open a visual dashboard to inspect context-window usage and token distribution (similar to `claude code /context`).
 
@@ -64,4 +66,8 @@ This extension adds the `context-management` skill, which guides agents to keep 
    View the active path as a structural map of checkpoints, summaries/compactions, branch points, user turns, and current position. Use it when orientation or compact target selection depends on history shape.
 
 3. **⏪ Compact (`context_compact`)**
-   Create a summarized continuation branch from an earlier checkpoint, history node, or `root`. The summary should restore the useful state after the target: current task, decisions, external side effects such as changed files or remote updates, validation state, source anchors, and the explicit next step.
+   Compact the conversation after an earlier checkpoint, history node, or `root` into a summarized continuation. The summary should restore the useful state after the target: current task, decisions, external side effects such as changed files or remote updates, validation state, source anchors, and the explicit next step.
+
+## Development
+
+Contributor guidance lives in [AGENTS.md](AGENTS.md) (commands, structure, conventions) and [docs/compaction.md](docs/compaction.md) (how compaction works and why). Test instructions are in [test/test.md](test/test.md).

@@ -67,7 +67,7 @@ const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: metadata.timezon
 const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: metadata.timezone, hour:'2-digit', minute:'2-digit' });
 const formatNumber = value => value == null ? '未知' : numberFormat.format(value);
 const formatShort = value => value >= 1e6 ? `${+(value / 1e6).toFixed(2)}M` : value >= 1000 ? `${+(value / 1000).toFixed(1)}k` : `${Math.round(value)}`;
-const statusText = {success:'返回成功',error:'工具报错','no-result':'未见结果',unknown:'未知',requested:'仅发起',accepted:'已返回，未见分支',branched:'已建立分支',resumed:'已见模型续行'};
+const statusText = {success:'返回成功',error:'工具报错','no-result':'未见结果',unknown:'未知',requested:'仅发起',accepted:'已返回，未见分支',branched:'已建立分支',folded:'已折叠历史',resumed:'已见模型续行'};
 const familyNames = {context:'context_*',read:'read',change:'edit / write',bash:'bash',agent:'agent_*',other:'其他工具'};
 const families = Object.keys(familyNames);
 const $ = id => document.getElementById(id);

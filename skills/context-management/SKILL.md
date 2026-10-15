@@ -64,7 +64,7 @@ At the start of each new user message, classify it:
 - **Correction, review, or feedback on recent work:** answer from the raw recent context; do not compact merely to respond. Questions about implementation choices, shortcuts, trade-offs, or known risks are exactly why the completed work should remain inspectable.
 - **New task, explicit next step, or direction shift:** evaluate whether removing the completed noisy segment would help the now-known work after recovery costs. Inspect timeline when anchors are unclear; a new task alone does not require compaction.
 
-Checkpoint marks anchors and timeline shows structure. When the compact gate passes, compact creates a new branch from the chosen continuation anchor with a summary of what happened after it. These are available choices, not a required pipeline. The target is a working-set choice, not an age choice.
+Checkpoint marks anchors and timeline shows structure. When the compact gate passes, compact continues from the chosen continuation anchor with a summary of what happened after it. These are available choices, not a required pipeline. The target is a working-set choice, not an age choice.
 
 ## Main loop
 
@@ -188,7 +188,7 @@ Choose the continuation anchor by designing the next working set:
 4. Inspect what lies **after** each candidate anchor: only that segment is replaced. A newly created checkpoint followed by a few useful reads may leave the old noise intact while discarding the exact material needed next.
 5. Pick the anchor that gives the next stretch of work the **most useful working set after recovery**, not necessarily the smallest or newest one. An older anchor or `root` can help remove obsolete fronts, but only when restoring the active material is worthwhile. If no available cut preserves the needed raw context while removing enough noise, defer rather than copying whole files into a large summary.
 
-Avoid targets that are too late, too early with a weak summary, or semantically wrong. If there are several checkpoints, a task switch, or uncertainty about the best working set, run `context_timeline` first.
+Avoid targets that are too late, too early with a weak summary, or semantically wrong. If there are several checkpoints, a task switch, or uncertainty about the best working set, run `context_timeline` first. Checkpoints marked `compacted: not a compact target` are inside already-compacted history; choose a later anchor or `root`.
 
 Use `backupCheckpoint` when raw history may still matter later. A backup is a recovery safety net, not a substitute for the summary.
 

@@ -265,3 +265,33 @@ test('recovery is bounded to ten tools and sessions without usage still expose t
     assert.deepEqual(data.milestones.map(item => item.kind), ['branch', 'native-compaction']);
     assert.ok(!JSON.stringify(data).includes('PRIVATE_'));
 });
+
+test('in-place compaction folds are confirmed from their summary and context edits', () => {
+    const f = fixture();
+    f.assistant('kept', 's', [read('k', 'kept.ts')]);
+    f.result('kr', 'kept', 'k', 'retained');
+    f.assistant('removed', 'kr', [read('d', 'removed.ts')]);
+    f.result('dr', 'removed', 'd', 'removed evidence');
+    f.assistant('compact', 'dr', [call('compact-call', 'context_compact', { target: 'kr', summary: 'SECRET_HANDOFF' })]);
+    f.result('compact-result', 'compact', 'compact-call');
+    let parent = 'compact-result';
+    for (const targetId of ['removed', 'dr', 'compact', 'compact-result']) {
+        parent = f.add(`edit-${targetId}`, parent, { type: 'context_edit', targetId, replacement: null });
+    }
+    f.add('fold', parent, { type: 'custom_message', customType: 'pi-context-compaction', display: true,
+        content: 'SECRET_FOLD_BODY', details: { requestEntryId: 'compact', targetId: 'kr', summary: 'SECRET_HANDOFF' } });
+    f.assistant('resume', 'fold', [read('again', 'removed.ts')], { usage: { input: 20, output: 1 } });
+    f.result('again-result', 'resume', 'again', 'removed evidence');
+    const data = f.analyze();
+    const attempt = data.compactAttempts[0];
+    assert.equal(attempt.status, 'resumed');
+    assert.equal(attempt.targetId, 'kr');
+    assert.equal(attempt.branchLine, 12);
+    assert.equal(attempt.summaryChars, 'SECRET_HANDOFF'.length);
+    assert.deepEqual(attempt.removedToolKeys, [data.tools[1].key, data.tools[2].key]);
+    assert.equal(attempt.retainedToolCount, 1);
+    assert.deepEqual(attempt.rereads.map(item => item.removed), [true]);
+    assert.deepEqual(data.events.map(event => event.kind), ['pi-context']);
+    assert.ok(data.milestones.some(item => item.kind === 'fold'));
+    assert.ok(!JSON.stringify(data).includes('SECRET_'));
+});

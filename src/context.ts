@@ -1,10 +1,9 @@
 import {
   type ExtensionAPI,
-  type SessionManager,
   DynamicBorder,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Spacer } from "@earendil-works/pi-tui";
-import { estimateHistoryTokens, formatTokens, RetainedCodemodeOutputType } from "./utils.js";
+import { CompactionSummaryType, estimateHistoryTokens, formatTokens, RetainedCodemodeOutputType } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("context", {
@@ -16,8 +15,10 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const sm = ctx.sessionManager as SessionManager;
-      const branch = sm.getBranch();
+      // Count only what the model sees: the projection drops folded and natively compacted history.
+      const contextEntries = ctx.sessionManager.buildSessionProjection().entries
+        .filter((entry) => entry.messages.length > 0)
+        .map((entry) => entry.sourceEntry);
       const systemPrompt = ctx.getSystemPrompt();
       const tools = pi.getActiveTools();
       const allTools = pi.getAllTools();
@@ -29,7 +30,7 @@ export default function (pi: ExtensionAPI) {
       let toolUseTokensRaw = 0;
       let toolResultTokensRaw = 0;
 
-      for (const entry of branch) {
+      for (const entry of contextEntries) {
         if (entry.type === "message") {
           const m = entry.message;
           if (m.role === "user") {
@@ -56,6 +57,8 @@ export default function (pi: ExtensionAPI) {
           msgTokensRaw += estimateTokens(entry.summary || "");
         } else if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
           toolResultTokensRaw += estimateHistoryTokens(entry);
+        } else if (entry.type === "custom_message" && entry.customType === CompactionSummaryType) {
+          msgTokensRaw += estimateHistoryTokens(entry);
         }
       }
 

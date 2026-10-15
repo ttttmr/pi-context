@@ -8,8 +8,17 @@ export const formatTokens = (n: number | null | undefined) => {
   return n.toString();
 };
 
-/** The retained codemode output is task context, not internal compaction traffic. */
+/** Legacy (<= 2.3) retained codemode output: task context, not internal compaction traffic. */
 export const RetainedCodemodeOutputType = "pi-context-codemode-output";
+
+/** Handoff summary plus retained step outputs that replace folded history. Task context. */
+export const CompactionSummaryType = "pi-context-compaction";
+
+const ContextTaskMessageTypes = new Set([RetainedCodemodeOutputType, CompactionSummaryType]);
+
+/** Mirror Pi's context_edit target rule: only these entries can be omitted from model context. */
+export const isEditableContextEntry = (entry: SessionEntry) => entry.type === "custom_message" ||
+    (entry.type === "message" && ["user", "assistant", "toolResult"].includes(entry.message.role));
 
 /** Identify internal context tools for timeline folding and interval estimates. */
 export const isContextTool = (name: string) => ["context_checkpoint", "context_timeline", "context_compact"].includes(name);
@@ -34,14 +43,14 @@ export function parseCheckpointPhase(name: string): { scope: string; phase: Chec
 export function estimateHistoryTokens(entry: SessionEntry): number {
     if (entry.type === "branch_summary" || entry.type === "compaction") return Math.ceil(entry.summary.length / 4);
     if (entry.type === "custom_message") {
-        if (entry.customType.startsWith("pi-context") && entry.customType !== RetainedCodemodeOutputType) return 0;
+        if (entry.customType.startsWith("pi-context") && !ContextTaskMessageTypes.has(entry.customType)) return 0;
         return estimateTokens({ role: "custom", customType: entry.customType, content: entry.content, display: false, timestamp: 0 });
     }
     if (entry.type !== "message") return 0;
     const message = entry.message;
     if (message.role === "toolResult" && isContextTool(message.toolName)) return 0;
     if (message.role === "custom" && message.customType.startsWith("pi-context") &&
-        message.customType !== RetainedCodemodeOutputType) return 0;
+        !ContextTaskMessageTypes.has(message.customType)) return 0;
     if (message.role === "bashExecution" && message.excludeFromContext) return 0;
     if (message.role === "assistant") {
         return estimateTokens({ ...message, content: message.content.filter(block =>

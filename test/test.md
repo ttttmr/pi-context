@@ -17,39 +17,62 @@ Strictly follow the steps below.
 
 `npm test` covers checkpoint phase-suffix parsing, timeline structure without compact advice, and interval token estimates (which exclude internal context-management traffic).
 
-## Codemode regression
+## Compaction regression
 
-`npm test` covers parent-call anchoring, opaque parent IDs, mixed codemode scripts, whole-output retention before the summary (including text/images), original-history recovery, store state, unchanged billing, long summaries and truncated nested records. It also covers cancellation for failed scripts, missing/ambiguous/mismatched compact results, duplicate compacts, parallel outer calls, invalid targets, contextual advancement, queued input, and declined navigation.
+`npm test` drives a real `AgentSession` with Pi's faux provider (`test/compaction.test.mjs`) and asserts the provider-visible request after compaction: prefix through the target → summary message with retained step outputs, with closed tool-call/result pairs and no rerun. It covers direct siblings, codemode scripts (whole output kept, `codemode-store` state still loadable), steering sent during the compact step (delivered after the summary), duplicate requests, invalid/folded targets, a target assistant's own tool results, repeated compaction to `root`, user interruption, backup-checkpoint recovery, timeline folding, and the summary renderer.
 
-For a live check on Pi >= 0.99.0, enable the built-in codemode extension with `codemode.mode="only"` in isolated settings and explicitly load this checkout's `src/index.ts` (not an older installed copy). Print a tool result, await `context_compact` to an earlier checkpoint, then print another result. Confirm the model sees prefix → full script output → summary, continues without rerunning the script, and can still `load()` stored values. Repeat with classifier/image calls and an omitted long-summary argument. A thrown script error, a second compact request, or a new contextual message must cancel without switching the active path.
+For a manual codemode check, enable the built-in codemode extension with `codemode.mode="only"` in isolated settings and explicitly load this checkout's `src/index.ts` (not an older installed copy). In one script, print a tool result, await `context_compact` to an earlier checkpoint, then print another result. Confirm the transcript shows a "Context compacted" message, the model continues without rerunning the script, and can still `load()` stored values.
 
-## Live command-context validation
+## Live compaction validation
 
 Run the opt-in real-model test (uses existing Pi authentication and consumes tokens):
 
 ```bash
 npm run test:live
 # Optional model override:
-PI_CONTEXT_TEST_MODEL=openai-codex/gpt-5.6-luna npm run test:live
+PI_CONTEXT_TEST_MODEL=codex/gpt-5.6-luna npm run test:live
+# Models registered by a provider extension (path-delimited list of extensions):
+PI_CONTEXT_TEST_MODEL=provider/model PI_CONTEXT_TEST_EXTENSIONS=/path/to/provider-extension.ts npm run test:live
 ```
 
-The default is `openai-codex/gpt-5.6-luna` with low thinking. The runner launches isolated Pi RPC processes using the locally installed Pi package and current source extension; it disables other extensions, skills, context files, and built-in tools. It does not change global configuration.
+Keep machine-specific settings in the gitignored `.pi/live-test.json` instead of the repository; environment variables override it:
 
-Four phases check first-time acquisition, reuse in the same process, reacquisition after restarting with the saved session, and cancellation when a contextual message is flushed after `turn_end` but before `agent_end`. A passive test probe records actual `/acm` handler invocations without replacing command context or navigation. Assertions check summary ancestry, exact model continuation, dispatch counts, absence of orphan tool results, and absence of internal commands in user history or editor mutations. The cancellation phase must create no summary branch and retain the late contextual message on the active path. Advancement is measured from the assistant message containing the compact call; passive entries, that call's successful tool result, and an empty abort boundary do not cancel compaction.
+```json
+{ "model": "provider/model", "extensions": ["~/path/to/provider-extension.ts"] }
+```
 
-Session files, raw RPC events, stderr, and per-phase verified results are saved under the temporary artifact directory printed at startup. The existing deliberate abort boundary may appear as an empty Codex `This operation was aborted` error before continuation; errors after continuation remain failures. This exercises real RPC and model behavior, not TUI rendering. It is excluded from `npm test`.
+The default is `codex/gpt-5.6-luna` with low thinking. The runner launches isolated Pi RPC processes using the locally installed Pi package and current source extension; it disables other extensions (except provider extensions passed in `PI_CONTEXT_TEST_EXTENSIONS`), skills, context files, and built-in tools. It does not change global configuration.
 
-## Compaction advancement regression
+Four phases compact to `root` and require the model to continue to an exact marker: first compaction, a second one in the same process, one after restarting with the saved session, and one where a test extension queues a contextual message while the compact step ends (it must appear after the summary). Assertions require no aborted or errored messages, no tool or extension errors, no branch summaries, the summary on the active path and in model context, the folded prompt out of model context, and no orphan tool results.
 
-Launch Pi with the passive-entry fixture:
+Session files, raw RPC events, stderr, and per-phase verified results are saved under the temporary artifact directory printed at startup. This exercises real RPC and model behavior, not TUI rendering. It is excluded from `npm test`.
+
+## Live scenario matrix
+
+`npm run test:scenarios` runs every compaction scenario against a real model in isolated Pi RPC processes (same model/extension configuration as `test:live`; costs tokens). Each scenario sets up `start-<id>` → noisy step → `inner-<id>`, then exercises one case and checks the model context (`get_messages`), raw entries, tool executions, and the model's reply.
+
+| Group | Scenarios |
+|---|---|
+| Direct tools (no codemode) | compact alone; parallel `bash` + compact (output kept, run once); parallel timeline + checkpoint + compact (management output not kept); two parallel compacts (cancelled); invalid then valid target; backup recovery; steer and follow-up during the compact step (delivered after the summary); user abort (cancelled); folded target rejected then `root` folds the earlier summary; compaction after Pi native compaction |
+| `codemode.mode="on"` | codemode sibling + direct compact; compact inside a script with work before/after; direct + script compact in one message (cancelled) |
+| `codemode.mode="only"` | compact only; work → compact → work; compact first; `Promise.all([bash, compact])`; `store()` before/after compact still loadable; script throws after compact (partial output kept); second compact caught or `Promise.allSettled` of two (cancelled); unawaited compact; two scripts in one message; printed compact result; invalid compact caught then valid; backup recovery |
 
 ```bash
-pi --no-skills --no-extensions -e ./src/index.ts -e ./src/context.ts -e ./test/passive-custom-extension.ts
+npm run test:scenarios
+PI_CONTEXT_SCENARIOS=D2,S4 npm run test:scenarios     # subset
+PI_CONTEXT_SCENARIO_CONCURRENCY=4 npm run test:scenarios
 ```
 
-1. Without running `/acm`, ask the agent to checkpoint, inspect the timeline, and call `context_compact`. Confirm automatic command-context acquisition succeeds without changing the editor or injecting `/acm` into model history.
-2. Confirm that label, session-info, and non-contextual custom entries appended while `waitForIdle()` settles do not cancel compaction.
-3. Repeat while submitting a real user steering message before compaction settles; confirm that any message entry cancels compaction exactly once and creates no summary branch.
-4. Confirm that the next model request contains no orphaned tool result.
-5. Resume the session in a new process or run `/reload`, then compact again without manual enablement.
-6. Verify `/acm <task>` still submits the task and manual `/acm` remains usable.
+Concurrency defaults to 1; each Pi process uses about 200 MB. Results, per-scenario RPC events and session files are written to the printed artifact directory. A cancelled step is judged at its own boundary; the model may legitimately retry afterwards. A stalled model stream (rare degenerate output) is aborted and the prompt retried once.
+
+## Interactive check
+
+```bash
+pi --no-skills --no-extensions -e ./src/index.ts -e ./src/context.ts
+```
+
+1. Without running `/acm`, ask the agent to checkpoint, do some noisy work, and call `context_compact` together with another tool in one step. Confirm a "Context compacted" message appears (expand it to see the kept step output) and the agent continues without rerunning the other tool.
+2. Type a message while the compact step runs; confirm it is answered after the summary.
+3. Run `/context` and `context_timeline`; confirm folded history is excluded from usage and shown as folded.
+4. Navigate with `/tree` to the backup checkpoint and confirm the original context is restored.
+5. Verify `/acm <task>` still submits the task.
