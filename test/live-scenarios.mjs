@@ -136,7 +136,6 @@ async function inspect(pi) {
     return {
         entries, messages, canonicalMessages, summaries, pairsClosed: pairsClosed && calls.size === 0,
         visible: messages.map(text).join("\n"),
-        edits: entries.filter((entry) => entry.type === "context_edit"),
     };
 }
 
@@ -200,7 +199,6 @@ async function runScenario(scenario) {
             const stored = after.entries.filter((entry) => entry.type === "custom_message" && entry.customType === "pi-context-compaction");
             check("one summary stores the compaction range", stored.length === 1 && typeof stored[0].details?.range?.throughId === "string" &&
                 (stored[0].details.range.afterId === null || typeof stored[0].details.range.afterId === "string"));
-            check("compaction writes no context edits", after.edits.length === 0);
             check("prefix before target kept", after.visible.includes(`Scenario ${id} setup step 1`));
             const replies = events.filter((event) => event.type === "message_end" && event.message.role === "assistant").map((event) => text(event.message));
             check("model continued with the summary's next step", replies.some((value) => value.includes(`DONE_${id}`)), reply);
@@ -215,7 +213,7 @@ async function runScenario(scenario) {
                 entry.customType === "pi-context" && text(entry).includes(scenario.notice));
             check(`step cancelled with notice: ${scenario.notice}`, noticeIndex >= 0);
             check("nothing folded or summarized by the cancelled step", noticeIndex >= 0 && !runEntries.slice(0, noticeIndex)
-                .some((entry) => entry.type === "context_edit" || entry.customType === "pi-context-compaction"));
+                .some((entry) => entry.customType === "pi-context-compaction"));
             const retried = after.summaries.length > 0;
             if (!retried) check("noise still visible", after.visible.includes(`NOISE_${token}`));
             observation = { retriedAfterCancel: retried, reply };
@@ -231,12 +229,12 @@ async function runScenario(scenario) {
         if (scenario.backup) {
             const label = after.entries.findLast((entry) => entry.type === "label" && entry.label === `raw-${id}`);
             check("backup checkpoint labeled", label);
-            // The path ending at the backup holds the raw history and none of the later edits or summary.
+            // The path ending at the backup holds the raw history and not the later summary.
             const byId = new Map(after.entries.map((entry) => [entry.id, entry]));
             const path = [];
             for (let entry = label && byId.get(label.targetId); entry; entry = byId.get(entry.parentId)) path.push(entry);
             check("backup restores the original context", path.some((entry) => entry.type === "message" && text(entry.message).includes(`NOISE_${token}`)) &&
-                !path.some((entry) => entry.type === "context_edit" || entry.customType === "pi-context-compaction"));
+                !path.some((entry) => entry.customType === "pi-context-compaction"));
         }
         if (scenario.storeCheck) {
             const loaded = events.filter((event) => event.type === "tool_execution_end" && event.toolName === "codemode")
@@ -244,7 +242,7 @@ async function runScenario(scenario) {
             check("store values written before and after compact load later", loaded.includes(`B_${token}`) && loaded.includes(`A_${token}`), loaded.slice(-300));
         }
         if (scenario.expect === "observe") {
-            observation = { applied: after.summaries.length > 0, edits: after.edits.length, reply,
+            observation = { applied: after.summaries.length > 0, reply,
                 notices: after.messages.filter((message) => message.role === "custom" && message.customType === "pi-context").map(text) };
         }
     } catch (error) {
@@ -279,7 +277,7 @@ async function nativeScenario(pi, { id }, token, check) {
     const rejection = events.find((event) => event.type === "tool_execution_end" && event.toolName === "context_compact");
     check("old target rejected", rejection?.isError && JSON.stringify(rejection.result).includes("already compacted"), JSON.stringify(rejection?.result).slice(0, 200));
     let after = await inspect(pi);
-    check("rejection changed no context", after.summaries.length === 0 && after.edits.length === 0);
+    check("rejection changed no context", after.summaries.length === 0);
     // A checkpoint after the native compaction still folds cleanly.
     await pi.prompt(`Call context_checkpoint with exactly {"name":"late-${id}"} (no target field). Then reply exactly LATE_OK.`);
     check("late checkpoint created", checkpointResolves((await pi.request("get_entries")).entries, `late-${id}`));

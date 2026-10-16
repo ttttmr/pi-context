@@ -89,8 +89,6 @@ const pairsAreClosed = (messages) => {
     return calls.size === 0;
 };
 
-const contextEdits = (sm) => sm.getBranch().filter((entry) => entry.type === "context_edit");
-
 test("folds history after the target in the same run and keeps sibling outputs", { timeout: 10000 }, async () => {
     const h = await createHarness();
     try {
@@ -114,7 +112,6 @@ test("folds history after the target in the same run and keeps sibling outputs",
         assert.match(visible[2], /\[echo \{"s":"sibling"\}\]\necho:sibling/);
         assert.doesNotMatch(visible[2], /noise|compact start/);
         assert.ok(pairsAreClosed(afterCompact));
-        assert.deepEqual(contextEdits(h.sm), [], "one range replaces all per-entry edits");
         const compact = h.sm.getBranch().find((entry) => entry.type === "custom_message" && entry.customType === "pi-context-compaction");
         assert.ok(compact.details.range.afterId && compact.details.range.throughId);
 
@@ -182,7 +179,6 @@ test("two compact requests in one step fold nothing", { timeout: 10000 }, async 
                 h.call("context_compact", { target: "phase-start", summary: "B" }, "c2")),
             h.reply("done"),
         ]);
-        assert.deepEqual(contextEdits(h.sm), []);
         const visible = view(h.requests[2]);
         assert.ok(visible.includes("user:noisy request"));
         assert.match(visible.at(-1), /context_compact cancelled: more than one compact request/);
@@ -205,6 +201,84 @@ test("rejects targets that are not visible entries before the request", { timeou
         assert.match(view(h.requests[4]).at(-1), /result:context_compact:context_compact: target missing-label was not found/);
         assert.match(view(h.requests[6]).at(-1), /result:context_compact:.*inside history that was already compacted/);
         assert.ok(view(h.requests[6]).some((line) => line.includes("SUMMARY_ONE")));
+    } finally { await h.dispose(); }
+});
+
+const toolResults = (sm, toolName) => Object.fromEntries(sm.getBranch()
+    .filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === toolName)
+    .map(({ message }) => [message.toolCallId, { isError: message.isError, text: textOf(message.content) }]));
+
+const labeledIds = (sm, name) => sm.getEntries().filter((entry) => sm.getLabel(entry.id) === name).map((entry) => entry.id);
+
+test("checkpoint names stay unique, resolvable, and never replace another checkpoint", { timeout: 10000 }, async () => {
+    const h = await createHarness();
+    try {
+        await h.run("first", [h.reply("TARGET answer")]);
+        await h.run("checkpoints", [
+            h.reply(h.call("context_checkpoint", { name: "abcdef12" }, "k1")),
+            h.reply(h.call("context_checkpoint", { name: "abcdef12" }, "k2")),
+            h.reply(h.call("context_checkpoint", { name: "Root" }, "k3")),
+            h.reply(h.call("context_checkpoint", { name: "other", target: "abcdef12" }, "k4")),
+            h.reply(h.call("context_checkpoint", { name: "other", target: "missing" }, "k5")),
+            h.reply(h.call("context_checkpoint", { name: " " }, "k6")),
+            h.reply(h.call("echo", { s: "noise" }, "n1")),
+            h.reply(h.call("context_compact", { target: "abcdef12", summary: "SUMMARY_CANARY" }, "c1")),
+            h.reply("done"),
+        ]);
+        const results = toolResults(h.sm, "context_checkpoint");
+        assert.equal(results.k1.isError, false);
+        assert.match(results.k2.text, /Checkpoint 'abcdef12' already exists/);
+        assert.match(results.k3.text, /reserved: root means the start of the current context/);
+        assert.match(results.k4.text, /already has checkpoint 'abcdef12'/);
+        assert.match(results.k5.text, /Target missing was not found/);
+        assert.match(results.k6.text, /must not be empty/);
+        for (const id of ["k2", "k3", "k4", "k5", "k6"]) assert.equal(results[id].isError, true, id);
+        assert.equal(labeledIds(h.sm, "abcdef12").length, 1);
+        assert.deepEqual(labeledIds(h.sm, "other"), []);
+        // A hex-like checkpoint name resolves as a checkpoint, not as an entry ID.
+        assert.equal(toolResults(h.sm, "context_compact").c1.isError, false);
+        const visible = view(h.requests.at(-1));
+        assert.ok(visible.some((line) => line.includes("SUMMARY_CANARY")));
+        assert.ok(!visible.some((line) => line.includes("echo:noise")));
+    } finally { await h.dispose(); }
+});
+
+test("backupCheckpoint must be a new checkpoint name", { timeout: 10000 }, async () => {
+    const h = await createHarness();
+    try {
+        await h.run("first", [h.reply("TARGET answer")]);
+        h.label("phase-start");
+        await h.run("noisy", [
+            h.reply(h.call("echo", { s: "noise" }, "n1")),
+            h.reply(h.call("context_compact", { target: "phase-start", summary: "A", backupCheckpoint: "phase-start" }, "c1")),
+            h.reply(h.call("context_compact", { target: "phase-start", summary: "B", backupCheckpoint: "phase-raw" }, "c2"),
+                h.call("context_checkpoint", { name: "phase-raw" }, "k1")),
+            h.reply("done"),
+        ]);
+        const compacts = toolResults(h.sm, "context_compact");
+        assert.equal(compacts.c1.isError, true);
+        assert.match(compacts.c1.text, /backupCheckpoint: Checkpoint 'phase-start' already exists/);
+        assert.match(toolResults(h.sm, "context_checkpoint").k1.text, /reserved as the backup checkpoint of a pending compaction/);
+        assert.equal(labeledIds(h.sm, "phase-start").length, 1);
+        assert.equal(labeledIds(h.sm, "phase-raw").length, 1);
+        assert.match(view(h.requests.at(-1)).at(-1), /summarized \(backup checkpoint: phase-raw\)/);
+    } finally { await h.dispose(); }
+});
+
+test("duplicate labels set outside the tools resolve to the newest on the active path", { timeout: 10000 }, async () => {
+    const h = await createHarness();
+    try {
+        await h.run("first", [h.reply("A")]);
+        h.label("dup");
+        await h.run("middle", [h.reply("B")]);
+        h.label("dup");
+        await h.run("compact", [
+            h.reply(h.call("context_compact", { target: "dup", summary: "SUMMARY_CANARY" }, "c1")),
+            h.reply("done"),
+        ]);
+        const visible = view(h.requests.at(-1));
+        assert.deepEqual(visible.slice(0, 4), ["user:first", "assistant:A", "user:middle", "assistant:B"]);
+        assert.ok(!visible.includes("user:compact"));
     } finally { await h.dispose(); }
 });
 
@@ -298,7 +372,6 @@ test("a step interrupted by the user does not fold history", { timeout: 10000 },
             h.reply(h.call("echo", { s: "abort" }, "a1"), h.call("context_compact", { target: "phase-start", summary: "X" }, "c1")),
         ]);
         await h.session.prompt("noisy request");
-        assert.deepEqual(contextEdits(h.sm), []);
         assert.ok(h.sm.getBranch().some((entry) => entry.type === "custom_message" &&
             textOf(entry.content).includes("context_compact cancelled: the request was interrupted.\nNo compaction was applied")));
     } finally { await h.dispose(); }
@@ -357,7 +430,6 @@ for (const historySize of [10, 2000]) {
             const added = h.sm.getEntries().slice(before);
             assert.equal(added.length, 5, "prompt, call, result, one summary, continuation");
             assert.equal(added.filter((entry) => entry.type === "custom_message").length, 1);
-            assert.deepEqual(contextEdits(h.sm), []);
             const summary = added.find((entry) => entry.type === "custom_message");
             assert.ok(JSON.stringify(summary.details.range).length < 160, "range size is independent of history length");
             assert.doesNotMatch(JSON.stringify(h.requests.at(-1)), /HISTORY_CANARY/);

@@ -66,7 +66,6 @@ async function compactRange(pi, target, marker, backupCheckpoint) {
     const { entries } = await pi.request("get_entries");
     const latest = storedSummaries(entries).at(-1);
     assert.ok(latest.details.range && JSON.stringify(latest.details.range).length < 160);
-    assert.equal(entries.filter((entry) => entry.type === "context_edit").length, 0);
     return latest;
 }
 
@@ -167,7 +166,6 @@ async function longHistoryChain(id, count) {
         await compactRange(pi, `anchor-${id}`, `LONG_STATE_${id}`);
         const after = await pi.request("get_entries");
         assert.equal(storedSummaries(after.entries).length, 1);
-        assert.equal(after.entries.filter((entry) => entry.type === "context_edit").length, 0);
         assert.ok(contents(after.entries).includes(marker));
         assert.ok(!visibleText(pi).includes(marker));
         const range = storedSummaries(after.entries)[0].details.range;

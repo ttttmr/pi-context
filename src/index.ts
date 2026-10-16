@@ -4,7 +4,6 @@ import {
     type SessionBoundaryDraft,
     type SessionEntry,
     type SessionTreeNode,
-    type ProjectedSessionEntry,
     type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -16,8 +15,11 @@ import {
     type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { CompactionSummaryType, describeHistoryInterval, estimateHistoryTokens, formatTokens, formatContextUsage, isContextTool as isInternal, isEditableContextEntry, parseCheckpointPhase, RetainedCodemodeOutputType } from "./utils.js";
-import { filterCompactionMessages, filterNativeCompaction, getCompactionContextUsage, getCompactionProjection, type CompactionRange } from "./compaction-context.js";
+import { CompactionSummaryType, estimateHistoryTokens, formatTokens, formatContextUsage, isContextTool as isInternal, isFoldableEntry } from "./utils.js";
+import { filterCompactionMessages, filterNativeCompaction, getCompactionContextUsage, getCompactionProjection, isFoldedEntry, type CompactionDetails } from "./compaction-context.js";
+import { registerContextTimeline } from "./timeline.js";
+
+export type { CompactionDetails } from "./compaction-context.js";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
@@ -39,25 +41,43 @@ const findCompactRequest = (branch: readonly SessionEntry[], toolCallId: string)
     }
 };
 
-const resolveTargetId = (sm: ReadonlySessionManager, target: string): string => {
-    if (target.toLowerCase() === "root") {
-        const tree = sm.getTree();
-        return tree.length > 0 ? tree[0].entry.id : target;
+const isRootTarget = (target: string) => target.toLowerCase() === "root";
+
+/**
+ * Find the entry carrying a checkpoint name. Pi keeps one label per entry but not one
+ * entry per label (users can also label in /tree), so prefer the newest match on the
+ * active path, then any other branch. Iterative DFS avoids stack overflows on deep histories.
+ */
+const findCheckpoint = (sm: ReadonlySessionManager, name: string): string | undefined => {
+    const branch = sm.getBranch();
+    for (let i = branch.length - 1; i >= 0; i--) {
+        if (sm.getLabel(branch[i].id) === name) return branch[i].id;
     }
-
-    // If it already looks like an ID, keep it.
-    if (/^[0-9a-f]{8,}$/i.test(target)) return target;
-
-    // Iterative DFS to avoid call stack overflows on deep histories.
     const stack: SessionTreeNode[] = [...sm.getTree()];
     while (stack.length > 0) {
         const n = stack.pop()!;
-        if (sm.getLabel(n.entry.id) === target) return n.entry.id;
-        if (n.children?.length) stack.push(...n.children);
+        if (sm.getLabel(n.entry.id) === name) return n.entry.id;
+        stack.push(...n.children);
     }
+};
 
-    // Fallback: validation reports targets that are not on the active path.
-    return target;
+/** Checkpoint names win over entry IDs; unresolved targets are validated by the caller. */
+const resolveTargetId = (sm: ReadonlySessionManager, target: string): string => {
+    if (isRootTarget(target)) {
+        const tree = sm.getTree();
+        return tree.length > 0 ? tree[0].entry.id : target;
+    }
+    return findCheckpoint(sm, target) ?? target;
+};
+
+/** Reject names that a later target could not resolve to exactly this checkpoint. */
+const checkpointNameError = (sm: ReadonlySessionManager, name: string, pendingName?: string): string | undefined => {
+    if (!name.trim()) return "Checkpoint name must not be empty.";
+    if (isRootTarget(name)) return `Checkpoint name '${name}' is reserved: root means the start of the current context. Use a different name.`;
+    if (sm.getEntry(name)) return `Checkpoint name '${name}' is already an entry ID. Use a different name.`;
+    const existing = findCheckpoint(sm, name);
+    if (existing) return `Checkpoint '${name}' already exists at ${existing}. Checkpoint names must be unique. Use a different name or remove the existing one first.`;
+    if (name === pendingName) return `Checkpoint '${name}' is already reserved as the backup checkpoint of a pending compaction. Use a different name.`;
 };
 
 /**
@@ -74,15 +94,6 @@ const locateContextTarget = (sm: ReadonlySessionManager, targetId: string, root:
     if (isFoldedEntry(projection[index])) return { projection, index, reason: "folded" as const };
     return { projection, index };
 };
-
-/** Folded by an earlier compaction: editable and selected, but contributing no model messages. */
-const isFoldedEntry = (entry: ProjectedSessionEntry) => !entry.messages.length && isEditableContextEntry(entry.sourceEntry);
-
-const ContextTimelineDescription = "Inspect the active conversation path as a structural map: checkpoints, summaries/compactions, branch points, user turns, and current position. Use when orientation or compact target selection depends on the shape of history. Folded intervals show historical token estimates, not reclaimable space.";
-const ContextTimelineParams = Type.Object({
-    limit: Type.Optional(Type.Number({ description: "Maximum visible timeline entries (default: 50)." })),
-    verbose: Type.Optional(Type.Boolean({ description: "If true, show all messages including internal context-tool traffic. If false (default), collapse to structural milestones." })),
-});
 
 const ContextCompactDescription = "Compact the conversation after an earlier checkpoint or history node into a summarized continuation. The selected target is where the continuation starts; the summary must restore the useful state from the compacted path after that target. This changes conversation history only; it does not modify or roll back disk files or external systems.";
 const ContextCompactParams = Type.Object({
@@ -103,18 +114,6 @@ interface PendingCompactRequest extends Static<typeof ContextCompactParams> {
     root: boolean;
     requestEntryId: string;
     invalidated?: boolean;
-}
-
-export interface CompactionDetails {
-    target: string;
-    targetId: string;
-    requestEntryId: string;
-    summary: string;
-    folded: number;
-    foldedTokens: number;
-    retained: number;
-    backupCheckpoint?: string;
-    range?: CompactionRange;
 }
 
 // Context tool results describe pre-fold state; a script whose recorded calls were
@@ -152,10 +151,10 @@ const planCompaction = (
         break;
     }
     // Context order, not raw order: a native compaction summary leads the context.
-    // Non-editable entries (system loadout, user bash, branch summaries, native
+    // Non-foldable entries (system loadout, user bash, branch summaries, native
     // compaction) stay visible to preserve required state and existing behavior.
     const folded = projection.slice(targetIndex + 1).flatMap(({ sourceEntry, messages }) => {
-        if (!messages.length || !isEditableContextEntry(sourceEntry)) return [];
+        if (!messages.length || !isFoldableEntry(sourceEntry)) return [];
         if (sourceEntry.type === "message" && sourceEntry.message.role === "toolResult" &&
             keptCalls.has(sourceEntry.message.toolCallId)) return [];
         return [sourceEntry];
@@ -244,23 +243,6 @@ export default function (pi: ExtensionAPI) {
         return box;
     });
 
-    // Helper: Check if a checkpoint name already exists in the tree
-    // Iterative DFS to avoid call stack overflows on deep histories.
-    // Push children in reverse order to preserve left-to-right pre-order semantics.
-    const findCheckpointInTree = (sm: ReadonlySessionManager, nodes: SessionTreeNode[], checkpointName: string): string | null => {
-        const stack: SessionTreeNode[] = [...nodes].reverse();
-        while (stack.length > 0) {
-            const n = stack.pop()!;
-            if (sm.getLabel(n.entry.id) === checkpointName) return n.entry.id;
-            if (n.children?.length) {
-                for (let i = n.children.length - 1; i >= 0; i--) {
-                    stack.push(n.children[i]);
-                }
-            }
-        }
-        return null;
-    };
-
     pi.registerTool({
         name: "context_checkpoint",
         label: "Context Checkpoint",
@@ -268,54 +250,28 @@ export default function (pi: ExtensionAPI) {
         parameters: ContextCheckpointParams,
         async execute(_id, params: Static<typeof ContextCheckpointParams>, _signal, _onUpdate, ctx) {
             const sm = ctx.sessionManager;
-
-            // Deduplication check: ensure checkpoint name is unique
-            const existingCheckpointId = findCheckpointInTree(sm, sm.getTree(), params.name);
-            if (existingCheckpointId) {
-                return {
-                    content: [{
-                        type: "text",
-                        text: `Error: Checkpoint '${params.name}' already exists at ${existingCheckpointId}. Checkpoint names must be unique. Use a different name or remove the existing one first.`
-                    }],
-                    details: {}
-                };
-            }
+            const nameError = checkpointNameError(sm, params.name, pendingCompact?.backupCheckpoint);
+            if (nameError) throw new Error(nameError);
 
             let id = params.target ? resolveTargetId(sm, params.target) : undefined;
-
             if (!id) {
-                // Auto-resolve: Find the last interesting node to checkpoint.
-                // We skip ToolResults that look awkward when checkpointed and internal-only assistant messages that look empty.
+                // Default to the newest entry, usually the requesting assistant message.
+                // Results of context tools describe management traffic, not task state.
                 const branch = sm.getBranch();
-                for (let i = branch.length - 1; i >= 0; i--) {
+                for (let i = branch.length - 1; i >= 0 && !id; i--) {
                     const entry = branch[i];
-
-                    // 1. Check ToolResults
-                    if (entry.type === 'message' && entry.message.role === 'toolResult') {
-                        const tr = entry.message as any;
-                        if (isInternal(tr.toolName)) continue;
-
-                        // Public tool result is a valid target
-                        id = entry.id;
-                        break;
-                    }
-
-                    // 2. Check Assistant messages for visibility
-                    if (entry.type === 'message' && entry.message.role === 'assistant') {
-                        const m = entry.message;
-                        const hasInternalTool = m.content.some(c => c.type === 'toolCall' && isInternal(c.name));
-
-                        if (!hasInternalTool) {
-                            id = entry.id;
-                            break;
-                        }
-                    }
-
+                    if (entry.type === "message" && entry.message.role === "toolResult" && isInternal(entry.message.toolName)) continue;
                     id = entry.id;
-                    break;
                 }
-                // Fallback to leaf if search failed
-                if (!id) id = sm.getLeafId() ?? "";
+                id ??= sm.getLeafId() ?? "";
+            }
+            if (!sm.getEntry(id)) {
+                throw new Error(`Target ${params.target ?? id} was not found; use a checkpoint name or an entry ID from context_timeline.`);
+            }
+            // Pi keeps one label per entry: relabeling would silently remove a checkpoint.
+            const existingName = sm.getLabel(id);
+            if (existingName) {
+                throw new Error(`Entry ${id} already has checkpoint '${existingName}'. Use that checkpoint or choose another target.`);
             }
 
             pi.setLabel(id, params.name);
@@ -329,244 +285,7 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    pi.registerTool({
-        name: "context_timeline",
-        label: "Context Timeline",
-        description: ContextTimelineDescription,
-        parameters: ContextTimelineParams,
-        async execute(_id, params: Static<typeof ContextTimelineParams>, _signal, _onUpdate, ctx) {
-            const sm = ctx.sessionManager;
-            const branch = sm.getBranch();
-            const currentLeafId = sm.getLeafId();
-            // The read-only manager has no getChildren; index children from the tree once.
-            const childrenById = new Map<string, SessionEntry[]>();
-            for (const stack = [...sm.getTree()]; stack.length;) {
-                const node = stack.pop()!;
-                childrenById.set(node.entry.id, node.children.map((child) => child.entry));
-                stack.push(...node.children);
-            }
-            const getChildren = (id: string) => childrenById.get(id) ?? [];
-            const verbose = params.verbose ?? false;
-            const limit = params.limit ?? 50;
-
-            const backboneIds = new Set(branch.map((e) => e.id));
-            const projection = getCompactionProjection(sm);
-            const foldedIds = new Set(projection.filter(isFoldedEntry).map((entry) => entry.sourceEntry.id));
-            // Active-path history Pi's native compaction replaced with its summary: not compact targets.
-            const contextIds = new Set(projection.map((entry) => entry.sourceEntry.id));
-            let nativeIndex = -1;
-            branch.forEach((entry, index) => { if (entry.type === "compaction") nativeIndex = index; });
-            // Root stays a valid target: it means the start of the current context.
-            const summarizedIds = new Set(branch.slice(1, Math.max(nativeIndex, 0))
-                .filter((entry) => !contextIds.has(entry.id)).map((entry) => entry.id));
-            const hiddenKind = (id: string) => foldedIds.has(id) || summarizedIds.has(id) ? "compacted: " : "";
-            const sequence: SessionEntry[] = [];
-            const isTaskMessage = (entry: SessionEntry) => entry.type === "custom_message" &&
-                (entry.customType === RetainedCodemodeOutputType || entry.customType === CompactionSummaryType);
-
-            branch.forEach((entry) => {
-                // Context edits are bookkeeping; folded entries are marked on their targets.
-                if (entry.type !== "context_edit" || entry.id === currentLeafId) sequence.push(entry);
-
-                // Preserve side-summary logic: Show branch summaries/compactions that are off-path
-                const children = getChildren(entry.id);
-                children.forEach((child) => {
-                    if ((child.type === "branch_summary" || child.type === "compaction") && !backboneIds.has(child.id)) {
-                        sequence.push(child);
-                    }
-                });
-            });
-
-            const getMsgContent = (entry: SessionEntry): string => {
-                if (entry.type === "branch_summary" || entry.type === "compaction") {
-                    const e = entry;
-                    return e.summary || "[No summary provided]";
-                }
-                if (entry.type === "label") {
-                    return `checkpoint: ${entry.label}`;
-                }
-                if (entry.type === "custom_message" && entry.customType === CompactionSummaryType) {
-                    const details = entry.details as CompactionDetails | undefined;
-                    return details
-                        ? `(compacted ${details.folded} entries after ${details.target} · ~${formatTokens(estimateHistoryTokens(entry))} tokens) ${details.summary}`
-                        : `(compaction summary) ${typeof entry.content === "string" ? entry.content : ""}`;
-                }
-                if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
-                    const text = typeof entry.content === "string" ? entry.content
-                        : entry.content.map((block) => block.type === "text" ? block.text : "[image]").join(" ");
-                    return `(codemode output · ~${formatTokens(estimateHistoryTokens(entry))} tokens) ${text}`;
-                }
-
-                if (entry.type === "message") {
-                    const msg = entry.message;
-
-                    if (msg.role === "toolResult") {
-                        const tr = msg;
-                        if (!verbose && isInternal(tr.toolName)) return "";
-
-                        const extractText = (content: (TextContent | ImageContent)[]): string => {
-                            return content
-                                .map((p) => (p.type === "text" ? p.text : ""))
-                                .join(" ")
-                                .trim();
-                        };
-
-                        let resText = extractText(tr.content);
-                        const details = tr.details as Record<string, unknown> | undefined;
-                        if ((tr.toolName === "read" || tr.toolName === "edit") && details && "path" in details && typeof details.path === "string") {
-                            resText = `${details.path}: ${resText}`;
-                        }
-                        return `(${tr.toolName}) ${resText}`;
-                    }
-
-                    if (msg.role === "bashExecution") {
-                        return `[Bash] ${msg.command}`;
-                    }
-
-                    if (msg.role === "user" || msg.role === "assistant") {
-                        let text = "";
-                        if (typeof msg.content === "string") {
-                            text = msg.content;
-                        } else if (Array.isArray(msg.content)) {
-                            text = msg.content
-                                .map((p: any) => {
-                                    if (typeof p === "object" && p !== null && "text" in p) return (p as TextContent).text;
-                                    return "";
-                                })
-                                .join(" ")
-                                .trim();
-                        }
-
-                        let toolCallsText = "";
-                        if (msg.role === "assistant") {
-                            const toolCalls = msg.content.filter((c): c is ToolCall => c.type === "toolCall");
-
-                            toolCallsText = toolCalls
-                                .filter((tc) => verbose || !isInternal(tc.name))
-                                .map((tc) => `call: ${tc.name}(${JSON.stringify(tc.arguments)})`)
-                                .join("; ");
-                        }
-
-                        return [text, toolCallsText].filter(Boolean).join(" ");
-                    }
-                }
-                return "";
-            };
-
-            const isInteresting = (entry: SessionEntry): boolean => {
-                // 1. HEAD and Root
-                if (entry.id === currentLeafId) return true;
-                if (branch.length > 0 && entry.id === branch[0].id) return true;
-
-                // 2. Explicit checkpoints (labels) - only show the checkpointed node, not the label node itself
-                if (sm.getLabel(entry.id)) return true;
-                if (entry.type === 'label') return false; // Hide label nodes, they are redundant
-
-                // Folded history is summarized; only its checkpoints stay visible (marked folded).
-                if (foldedIds.has(entry.id) || summarizedIds.has(entry.id)) return false;
-
-                // 3. Structural Milestones (Summaries)
-                if (entry.type === 'branch_summary' || entry.type === 'compaction') return true;
-                if (isTaskMessage(entry)) return true;
-
-                // 4. Branch Points (Forks)
-                if (getChildren(entry.id).length > 1) return true;
-
-                // 5. Natural Milestones (User Messages) - This is the key auto-tagging mechanism
-                if (entry.type === 'message' && entry.message.role === 'user') return true;
-
-                return false;
-            };
-
-            const visibleSequenceIds = new Set<string>();
-            sequence.forEach(e => {
-                if (verbose || isInteresting(e)) {
-                    visibleSequenceIds.add(e.id);
-                }
-            });
-
-            let visibleEntries = sequence.filter(e => visibleSequenceIds.has(e.id));
-            if (visibleEntries.length > limit) {
-                const allowedIds = new Set(visibleEntries.slice(-limit).map(e => e.id));
-                visibleSequenceIds.clear();
-                allowedIds.forEach(id => visibleSequenceIds.add(id));
-            }
-
-            const lines: string[] = [];
-            let hiddenEntries: SessionEntry[] = [];
-            let hiddenGroup = "";
-            const flushHidden = () => {
-                if (hiddenEntries.length) {
-                    lines.push(`  :  ... (${hiddenGroup}${describeHistoryInterval(hiddenEntries)}) ...`);
-                }
-                hiddenEntries = [];
-            };
-
-            sequence.forEach((entry) => {
-                if (!visibleSequenceIds.has(entry.id)) {
-                    // Off-path summaries never contribute to active-path intervals.
-                    if (backboneIds.has(entry.id) && entry.type !== "custom" && entry.type !== "label" &&
-                        (entry.type !== "custom_message" || isTaskMessage(entry))) {
-                        // Folded, natively summarized and live history are reported as separate intervals.
-                        const group = hiddenKind(entry.id);
-                        if (group !== hiddenGroup) flushHidden();
-                        hiddenGroup = group;
-                        hiddenEntries.push(entry);
-                    }
-                    return;
-                }
-
-                flushHidden();
-
-                const isHead = entry.id === currentLeafId;
-                const label = sm.getLabel(entry.id);
-                const content = getMsgContent(entry).replace(/\s+/g, " ");
-
-                let role = entry.type.toUpperCase();
-                if (entry.type === "message") {
-                    const m = entry.message;
-                    role =
-                        m.role === "assistant"
-                            ? "AI"
-                            : m.role === "user"
-                                ? "USER"
-                                : m.role === "bashExecution"
-                                    ? "BASH"
-                                    : "TOOL";
-                } else if (entry.type === "branch_summary" || entry.type === "compaction" ||
-                    (entry.type === "custom_message" && entry.customType === CompactionSummaryType)) {
-                    role = "SUMMARY";
-                } else if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
-                    role = "TOOL";
-                }
-
-                // hide custom messages
-                if (role === "CUSTOM_MESSAGE") {
-                    return
-                }
-
-                const id = entry.id;
-                const isRoot = branch.length > 0 && entry.id === branch[0].id;
-                const stage = label ? parseCheckpointPhase(label)?.phase : undefined;
-                const meta = [isRoot ? "ROOT" : null, isHead ? "HEAD" : null,
-                    !backboneIds.has(id) ? "off-path" : null,
-                    foldedIds.has(id) || summarizedIds.has(id) ? "compacted: not a compact target" : null,
-                    label ? `checkpoint: ${label}` : null,
-                    stage ? `phase: ${stage}` : null].filter(Boolean).join(", ");
-
-                const body = content.length > 100 ? content.slice(0, 100) + "..." : content;
-
-                const marker = isHead ? "*" : (role === "USER" ? "•" : "|");
-
-                lines.push(`${marker} ${id}${meta ? ` (${meta})` : ""} [${role}] ${body}`);
-            });
-
-            flushHidden();
-            const hud = `Context: ${formatContextUsage(getCompactionContextUsage(sm, ctx.getContextUsage()), true)}`;
-
-            return { content: [{ type: "text", text: hud + "\n" + (lines.join("\n") || "(Root Path Only)") }], details: {} };
-        },
-    });
+    registerContextTimeline(pi);
 
     pi.registerTool({
         name: "context_compact",
@@ -585,7 +304,7 @@ export default function (pi: ExtensionAPI) {
                 pendingCompact.invalidated = true;
                 throw new Error("context_compact: only one compact request is allowed at a time; neither request will compact.");
             }
-            const root = params.target.toLowerCase() === "root";
+            const root = isRootTarget(params.target);
             const targetId = resolveTargetId(sm, params.target);
             if (!sm.getEntry(targetId)) {
                 throw new Error(`context_compact: target ${params.target} was not found; use a checkpoint name, an entry ID from context_timeline, or root.`);
@@ -594,14 +313,14 @@ export default function (pi: ExtensionAPI) {
             if (targetIndex < 0 || targetIndex >= branch.findIndex((entry) => entry.id === requestEntryId)) {
                 throw new Error(`context_compact: target ${params.target} is not earlier in the current conversation; choose a checkpoint from context_timeline or root.`);
             }
-            const { reason } = locateContextTarget(sm, targetId, root);
-            // Folding after an already-folded target would also drop the summary that covers it.
-            if (reason === "folded") {
+            // Folded targets would also drop the summary that covers them; targets before
+            // Pi's native kept range lost their prefix. Both share one remedy and wording.
+            if (locateContextTarget(sm, targetId, root).reason) {
                 throw new Error(`context_compact: target ${params.target} is inside history that was already compacted; choose a later checkpoint from context_timeline or root.`);
             }
-            if (reason === "outside") {
-                throw new Error(`context_compact: target ${params.target} is inside history that was already compacted; choose a later checkpoint from context_timeline or root.`);
-            }
+            // Validate now so the label cannot fail or duplicate a name after folding.
+            const backupError = params.backupCheckpoint ? checkpointNameError(sm, params.backupCheckpoint) : undefined;
+            if (backupError) throw new Error(`context_compact: backupCheckpoint: ${backupError}`);
             pendingCompact = { ...params, targetId, root, requestEntryId };
             return {
                 content: [{

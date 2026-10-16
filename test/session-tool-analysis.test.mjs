@@ -266,36 +266,6 @@ test('recovery is bounded to ten tools and sessions without usage still expose t
     assert.ok(!JSON.stringify(data).includes('PRIVATE_'));
 });
 
-test('in-place compaction folds are confirmed from their summary and context edits', () => {
-    const f = fixture();
-    f.assistant('kept', 's', [read('k', 'kept.ts')]);
-    f.result('kr', 'kept', 'k', 'retained');
-    f.assistant('removed', 'kr', [read('d', 'removed.ts')]);
-    f.result('dr', 'removed', 'd', 'removed evidence');
-    f.assistant('compact', 'dr', [call('compact-call', 'context_compact', { target: 'kr', summary: 'SECRET_HANDOFF' })]);
-    f.result('compact-result', 'compact', 'compact-call');
-    let parent = 'compact-result';
-    for (const targetId of ['removed', 'dr', 'compact', 'compact-result']) {
-        parent = f.add(`edit-${targetId}`, parent, { type: 'context_edit', targetId, replacement: null });
-    }
-    f.add('fold', parent, { type: 'custom_message', customType: 'pi-context-compaction', display: true,
-        content: 'SECRET_FOLD_BODY', details: { requestEntryId: 'compact', targetId: 'kr', summary: 'SECRET_HANDOFF' } });
-    f.assistant('resume', 'fold', [read('again', 'removed.ts')], { usage: { input: 20, output: 1 } });
-    f.result('again-result', 'resume', 'again', 'removed evidence');
-    const data = f.analyze();
-    const attempt = data.compactAttempts[0];
-    assert.equal(attempt.status, 'resumed');
-    assert.equal(attempt.targetId, 'kr');
-    assert.equal(attempt.branchLine, 12);
-    assert.equal(attempt.summaryChars, 'SECRET_HANDOFF'.length);
-    assert.deepEqual(attempt.removedToolKeys, [data.tools[1].key, data.tools[2].key]);
-    assert.equal(attempt.retainedToolCount, 1);
-    assert.deepEqual(attempt.rereads.map(item => item.removed), [true]);
-    assert.deepEqual(data.events.map(event => event.kind), ['pi-context']);
-    assert.ok(data.milestones.some(item => item.kind === 'fold'));
-    assert.ok(!JSON.stringify(data).includes('SECRET_'));
-});
-
 for (const root of [false, true]) {
     test(`range summary alone confirms compaction with ${root ? 'root' : 'exclusive assistant'} bounds`, () => {
         const f = fixture();
@@ -322,7 +292,6 @@ for (const root of [false, true]) {
         assert.equal(attempt.retainedToolCount, root ? 0 : 1);
         assert.deepEqual(attempt.rereads.map(item => item.removed), [true, root]);
         assert.deepEqual(data.events.map(event => event.kind), ['pi-context']);
-        assert.equal(f.entries.filter(entry => entry.type === 'context_edit').length, 0);
         assert.ok(!JSON.stringify(data).includes('PRIVATE_'));
     });
 }
@@ -368,7 +337,7 @@ for (const native of [false, true]) {
     });
 }
 
-test('range and legacy edit evidence follow summary ancestry, excluding sibling records', () => {
+test('range evidence follows summary ancestry, excluding sibling records', () => {
     const f = fixture();
     f.assistant('kept', 's', [read('k', 'kept.ts')]);
     f.result('kr', 'kept', 'k');
@@ -376,19 +345,14 @@ test('range and legacy edit evidence follow summary ancestry, excluding sibling 
     f.result('old-result', 'old', 'old-read');
     f.assistant('compact-1', 'old-result', [call('c1', 'context_compact', { target: 'kr' })]);
     f.result('result-1', 'compact-1', 'c1');
-    let parent = 'result-1';
-    for (const targetId of ['old', 'old-result', 'compact-1', 'result-1']) {
-        parent = f.add(`edit-${targetId}`, parent, { type: 'context_edit', targetId, replacement: null });
-    }
-    f.add('fold-1', parent, { type: 'custom_message', customType: 'pi-context-compaction',
-        details: { requestEntryId: 'compact-1', targetId: 'kr' } });
+    f.add('fold-1', 'result-1', { type: 'custom_message', customType: 'pi-context-compaction',
+        details: { requestEntryId: 'compact-1', targetId: 'kr', range: { afterId: 'kr', throughId: 'result-1' } } });
     f.assistant('middle', 'fold-1', [read('middle-read', 'middle.ts')]);
     f.result('middle-result', 'middle', 'middle-read');
     f.assistant('compact-2', 'middle-result', [call('c2', 'context_compact', { target: 'middle-result' })]);
     f.result('result-2', 'compact-2', 'c2');
-    // These records appear between the request and its summary but belong to another branch.
-    f.add('sibling-edit', 'kr', { type: 'context_edit', targetId: 'kept', replacement: null });
-    f.add('sibling-fold', 'sibling-edit', { type: 'custom_message', customType: 'pi-context-compaction',
+    // This summary appears between the request and its own summary but belongs to another branch.
+    f.add('sibling-fold', 'kr', { type: 'custom_message', customType: 'pi-context-compaction',
         details: { requestEntryId: 'compact-2', targetId: null,
             range: { afterId: null, throughId: 'kr' } } });
     f.add('fold-2', 'result-2', { type: 'custom_message', customType: 'pi-context-compaction',

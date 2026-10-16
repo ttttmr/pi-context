@@ -42,7 +42,7 @@ assistant message: [bash(...), context_compact(target, summary)]
 
 ## Why `turn_end`
 
-Pi's actionable `turn_end` boundary (Pi >= 0.87) runs after every tool result of the step is persisted and **before** steering is drained or the next request is built. Handlers can return `custom_message` / `context_edit` drafts and `continue: true`. That makes the step complete and closed:
+Pi's actionable `turn_end` boundary (Pi >= 0.87) runs after every tool result of the step is persisted and **before** steering is drained or the next request is built. Handlers can return `custom_message` drafts and `continue: true`. That makes the step complete and closed:
 
 - No sibling result can arrive later, so nothing needs to be verified after the fact.
 - User input sent meanwhile is queued and lands after the summary instead of racing it.
@@ -61,15 +61,21 @@ Validated in `execute()` and re-checked when planning:
    - **before Pi's native compaction kept range** → rejected. Its original prefix is no longer present in Pi's current context, so "keep everything up to the target" cannot be honored. A later checkpoint or `root` works.
 4. `root` means the start of the current context. After a native compaction, Pi's summary stays visible.
 
-Planning uses **context order** (the filtered projection), not raw path order: after a native compaction the summary leads the context while its raw entry sits later in the path. The saved rule uses active-path entry IDs; non-editable entries, including the native summary, remain visible.
+Planning uses **context order** (the filtered projection), not raw path order: after a native compaction the summary leads the context while its raw entry sits later in the path. The saved rule uses active-path entry IDs; non-foldable entries, including the native summary, remain visible.
 
 Timeline marks both kinds of unusable targets the same way (`compacted: not a compact target`; root is never marked) so agents can avoid them up front. Error messages also use one wording ("inside history that was already compacted") for both, because the remedy is the same.
+
+### Checkpoint names
+
+Targets resolve checkpoint names before entry IDs, so a hex-like name such as `abcdef12` still names its checkpoint. Pi stores one label per entry but does not keep labels unique (users can label in `/tree`), so a duplicated name resolves to the newest match on the active path, then to any other branch.
+
+`context_checkpoint` and `backupCheckpoint` share one name check: non-empty, not `root`, not an existing entry ID, and not an existing checkpoint. `backupCheckpoint` is checked in `execute()` so the label at `turn_end` cannot fail or duplicate a name after folding; a sibling `context_checkpoint` in the same step cannot take the pending backup name. `context_checkpoint` also refuses to label an entry that already carries a checkpoint, because relabeling would silently remove the old one.
 
 ## Wording for users and models
 
 The in-run design changed the implementation, not how the tools are used. Model- and user-facing text (tool and parameter descriptions, results, notices, the summary message, README, skill) keeps the 2.3 wording; it was only corrected where it described branching, and extended for genuinely new behavior (the "already compacted" target marker and errors). Do not rewrite it around a particular use case or the new mechanics.
 
-Implementation terms stay in code comments, this document, and AGENTS.md: step, turn_end, boundary, fold, omit, `context_edit`, projection, active path, native compaction. When adding text, decide which audience reads it first.
+Implementation terms stay in code comments, this document, and AGENTS.md: step, turn_end, boundary, fold, omit, range rule, projection, active path, native compaction. When adding text, decide which audience reads it first.
 
 ## What gets folded and kept
 
@@ -97,11 +103,11 @@ details.range: {
 }
 ```
 
-`getCompactionHiddenIds()` reconstructs hidden IDs from all range-bearing summaries on the active ancestor path. Only editable message/custom-message entries inside valid ranges are hidden. Each range preserves results belonging to its retained assistant; another overlapping range can still hide those results. The combined rules therefore preserve each range's exemptions without making them global exemptions.
+`getCompactionHiddenIds()` reconstructs hidden IDs from all range-bearing summaries on the active ancestor path. Only foldable message/custom-message entries inside valid ranges are hidden. Each range preserves results belonging to its retained assistant; another overlapping range can still hide those results. The combined rules therefore preserve each range's exemptions without making them global exemptions.
 
 Range rules are read from raw ancestors, including summaries hidden by later ranges or summarized by Pi's native compaction. Their effects survive session reload and native summarization. Branching naturally selects only the rules on the new active path; navigating before a range summary removes that rule's effect.
 
-`getCompactionProjection()` applies these rules on top of Pi's session projection and is shared by target validation, timeline markers, and the `/context` dashboard. Pi's existing `context_edit` records remain effective through its own projection, preserving sessions written by the earlier implementation. The `context` event filters the actual request messages, matching them to projected source messages. Native preparation can match original message references; cloned request messages reserve exact matches before a unique unmatched pair can be treated as a content transform. This prevents an injected message with a colliding timestamp from stealing an original's match. Ambiguous unmatched additions are kept because the event API does not expose source-entry IDs.
+`getCompactionProjection()` applies these rules on top of Pi's session projection and is shared by target validation, timeline markers, and the `/context` dashboard. The extension writes no `context_edit` records; Pi's own (such as recovery omissions) still apply through its projection. The `context` event filters the actual request messages, matching them to projected source messages. Native preparation can match original message references; cloned request messages reserve exact matches before a unique unmatched pair can be treated as a content transform. This prevents an injected message with a colliding timestamp from stealing an original's match. Ambiguous unmatched additions are kept because the event API does not expose source-entry IDs.
 
 ## Native compaction integration
 
@@ -124,6 +130,7 @@ Not cancel reasons: queued user input (delivered after the summary), a script th
 ## Rejected approaches
 
 - **Abort → wait for idle → branch with `navigateTree` → restart** (pi-context <= 2.3). `navigateTree` is not allowed while streaming, so the run had to stop. The window between the abort and navigation needed an "advancement gate": a growing allow-list of safe entries that cancelled on sibling outputs, unknown entry types, and queued input. The in-run design removes that window entirely.
+- **One `context_edit` omission per folded entry.** Every compaction appended a record for each hidden entry, so the session file grew with the amount of history folded (2,000 entries meant 2,000 records). One range rule in the summary's details has a constant size and is reconstructed per request.
 - **Treating a native-compacted target as `root`.** It would always succeed, but silently changes what the agent asked for. Rejecting with a clear message was preferred.
 - **Cancelling when a script throws after compact.** Executed calls cannot be undone, so keeping the output is more accurate than discarding the fold.
 
@@ -140,15 +147,16 @@ Not cancel reasons: queued user input (delivered after the summary), a script th
 
 - Sessions from pi-context <= 2.3 contain `branch_summary` entries and `pi-context-codemode-output` messages. Timeline, `/context`, and the session analyzer still recognize them.
 - `/acm` remains as a no-op compatibility command (`/acm <task>` still submits the task).
-- Older in-run sessions with per-entry `context_edit` omissions remain supported through Pi's projection; new compactions append only a range-bearing summary.
-- The session analyzer must recognize the summary's `details.range` as well as legacy `details.requestEntryId` / `context_edit` records.
+- The unreleased per-entry `context_edit` implementation is not supported. Pi's projection still applies such records in old development sessions, so their model context is unchanged, but the session analyzer no longer attributes them to a compaction.
+- The session analyzer confirms a compaction through the summary's `details.requestEntryId` and reads what it folded from `details.range`.
 
 ## Code map
 
 | Concern | Location |
 |---|---|
-| Request lookup, target resolution | `findCompactRequest`, `resolveTargetId` in `src/index.ts` |
-| Target in context / folded checks | `locateContextTarget`, `isFoldedEntry` in `src/index.ts`, using `getCompactionProjection` |
+| Request lookup, target resolution | `findCompactRequest`, `findCheckpoint`, `resolveTargetId` in `src/index.ts` |
+| Checkpoint and backup name rules | `checkpointNameError` in `src/index.ts` |
+| Target in context / folded checks | `locateContextTarget` in `src/index.ts`, `isFoldedEntry` in `src/compaction-context.ts`, using `getCompactionProjection` |
 | Saved range reconstruction and shared projection | `getCompactionHiddenIds`, `getCompactionProjection` in `src/compaction-context.ts` |
 | Request filtering and usage estimates | `filterCompactionMessages`, `getCompactionContextUsage` in `src/compaction-context.ts` |
 | Native summary input and file metadata | `filterNativeCompaction` in `src/compaction-context.ts`; `session_before_compact` handler in `src/index.ts` |
@@ -156,12 +164,12 @@ Not cancel reasons: queued user input (delivered after the summary), a script th
 | Validation and pending request | `context_compact` `execute()` |
 | Boundary, cancellation, backup label | `turn_end` handler |
 | Summary rendering | `registerMessageRenderer(CompactionSummaryType, …)` |
-| Timeline markers | `context_timeline` (`foldedIds`, `summarizedIds`) |
+| Timeline markers | `registerContextTimeline` in `src/timeline.ts` (`foldedIds`, `summarizedIds`) |
 | Editable-entry rule, task message types | `isEditableContextEntry`, `CompactionSummaryType` in `src/utils.ts` |
 
 ## Testing changes
 
-- `test/compaction.test.mjs` drives a real `AgentSession` with Pi's faux provider and asserts the provider-visible request. Add a case here first; it is fast and deterministic. Cover repeated/overlapping ranges, session reload, branching, native summarization of older range summaries, target tool-result preservation, and legacy `context_edit` compatibility.
+- `test/compaction.test.mjs` drives a real `AgentSession` with Pi's faux provider and asserts the provider-visible request. Add a case here first; it is fast and deterministic. Cover repeated/overlapping ranges, session reload, branching, native summarization of older range summaries, and target tool-result preservation.
 - Native integration regression coverage must inspect the default summarizer's filtered messages, split-turn prefix, and rebuilt file metadata (including previous cumulative paths), since the shared preparation mutation is verified behavior rather than an explicit returned hook contract.
 - `npm run test:scenarios` runs the real-model matrix (direct and parallel calls, codemode `on` / `only` script forms, cancellation, steering, native compaction). Run it after changing the boundary, fold range, or target rules. See [test/test.md](../test/test.md).
 - `npm run test:live` covers repeated compaction, resume from a saved session, and late input.

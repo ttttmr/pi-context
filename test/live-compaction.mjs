@@ -33,7 +33,6 @@ async function compactPhase(pi, phase, expectedSummaries, late = false) {
     assert.match(summaries.at(-1).details.summary, new RegExp(marker));
     assert.equal(typeof summaries.at(-1).details.range?.throughId, "string", "summary stores the compaction range");
     assert.equal(summaries.at(-1).details.range.afterId, null, "root range starts at the beginning of context");
-    assert.equal(entries.filter((entry) => entry.type === "context_edit").length, 0, "compaction writes no context edits");
     assert.equal(entries.filter((entry) => entry.type === "branch_summary").length, 0, "compaction does not branch");
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     const activeIds = [];

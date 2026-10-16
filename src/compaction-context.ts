@@ -7,7 +7,7 @@ import {
     type SessionBeforeCompactEvent,
     type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { CompactionSummaryType, isEditableContextEntry } from "./utils.js";
+import { CompactionSummaryType, isFoldableEntry } from "./utils.js";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 type ContextMessage = ContextEvent["messages"][number];
@@ -19,6 +19,22 @@ export interface CompactionRange {
     /** Preserve results of this retained assistant's tool calls without storing a list of IDs. */
     keepToolResultsOf?: string;
 }
+
+/** Details of a `pi-context-compaction` summary message. */
+export interface CompactionDetails {
+    target: string;
+    targetId: string;
+    requestEntryId: string;
+    summary: string;
+    folded: number;
+    foldedTokens: number;
+    retained: number;
+    backupCheckpoint?: string;
+    range?: CompactionRange;
+}
+
+/** Folded by an earlier compaction: foldable and selected, but contributing no model messages. */
+export const isFoldedEntry = (entry: ProjectedSessionEntry) => !entry.messages.length && isFoldableEntry(entry.sourceEntry);
 
 /** Find hidden history from ancestor summaries; no per-message edits or persisted ID lists. */
 export function getCompactionHiddenIds(branch: readonly SessionEntry[]): Set<string> {
@@ -36,7 +52,7 @@ export function getCompactionHiddenIds(branch: readonly SessionEntry[]): Set<str
     branch.forEach((entry, summaryIndex) => {
         if (entry.type !== "custom_message" || entry.customType !== CompactionSummaryType) return;
         const range = (entry.details as { range?: CompactionRange } | undefined)?.range;
-        if (!range) return; // Older summaries use Pi's persisted context_edit entries.
+        if (!range) return;
         const after = range.afterId === null ? -1 : indices.get(range.afterId);
         const through = indices.get(range.throughId);
         if (after === undefined || through === undefined || after >= through || through >= summaryIndex) return;
@@ -57,7 +73,7 @@ export function getCompactionHiddenIds(branch: readonly SessionEntry[]): Set<str
     let active = 0;
     branch.forEach((entry, index) => {
         active += changes[index];
-        if (active > exemptions[index] && isEditableContextEntry(entry)) hidden.add(entry.id);
+        if (active > exemptions[index] && isFoldableEntry(entry)) hidden.add(entry.id);
     });
     return hidden;
 }

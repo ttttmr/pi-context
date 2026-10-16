@@ -16,8 +16,8 @@ export const CompactionSummaryType = "pi-context-compaction";
 
 const ContextTaskMessageTypes = new Set([RetainedCodemodeOutputType, CompactionSummaryType]);
 
-/** Mirror Pi's context_edit target rule: only these entries can be omitted from model context. */
-export const isEditableContextEntry = (entry: SessionEntry) => entry.type === "custom_message" ||
+/** Conversation entries a compaction range can hide; system, bash, and summary entries stay visible. */
+export const isFoldableEntry = (entry: SessionEntry) => entry.type === "custom_message" ||
     (entry.type === "message" && ["user", "assistant", "toolResult"].includes(entry.message.role));
 
 /** Identify internal context tools for timeline folding and interval estimates. */

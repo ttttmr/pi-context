@@ -124,7 +124,7 @@ function sessionAncestry(startId, entriesById) {
     return path;
 }
 
-/** In-place compaction summary, with either a range rule or preceding legacy context edits. */
+/** In-place compaction summary; its details.range rule records what it folded. */
 const isFoldSummary = entry => entry.type === 'custom_message' && entry.customType === 'pi-context-compaction'
     && entry.details && typeof entry.details === 'object';
 
@@ -132,13 +132,7 @@ const isFoldSummary = entry => entry.type === 'custom_message' && entry.customTy
 function sessionFoldedEntryIds(path) {
     const foldedIds = new Set();
     const positions = new Map(path.map((entry, index) => [entry.id, index]));
-    const editedIds = new Set();
     for (const [index, entry] of path.entries()) {
-        // Newest legacy edit wins; range omissions remain a union independent of edit replacements.
-        if (entry.type === 'context_edit' && !editedIds.has(entry.targetId)) {
-            editedIds.add(entry.targetId);
-            if (entry.replacement === null && positions.has(entry.targetId)) foldedIds.add(entry.targetId);
-        }
         const range = isFoldSummary(entry) ? entry.details.range : null;
         if (!range || typeof range !== 'object') continue;
         const through = positions.get(range.throughId);
@@ -149,10 +143,10 @@ function sessionFoldedEntryIds(path) {
             && candidate.type === 'message' && candidate.message?.role === 'assistant');
         const keptCalls = new Set(toolCalls(keptAssistant).map(call => call.id));
         for (const candidate of path.slice(through, after)) {
-            const editable = candidate.type === 'custom_message' || (candidate.type === 'message'
+            const foldable = candidate.type === 'custom_message' || (candidate.type === 'message'
                 && ['user', 'assistant', 'toolResult'].includes(candidate.message?.role));
             const keptResult = candidate.message?.role === 'toolResult' && keptCalls.has(candidate.message.toolCallId);
-            if (editable && !keptResult) foldedIds.add(candidate.id);
+            if (foldable && !keptResult) foldedIds.add(candidate.id);
         }
     }
     return foldedIds;
