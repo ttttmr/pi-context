@@ -45,7 +45,7 @@ for (const retained of [false, true]) {
             : { type: "message", message: { role: "toolResult", toolName: "read", content } };
         let rendered;
         await commands.get("context").handler("", {
-            sessionManager: { buildSessionProjection: () => ({ entries: [{ sourceEntry: entry, messages: [{}] }] }) }, getSystemPrompt: () => "",
+            sessionManager: { getBranch: () => [entry], buildSessionProjection: () => ({ entries: [{ sourceEntry: entry, messages: [{}] }] }) }, getSystemPrompt: () => "",
             getContextUsage: () => ({ tokens: 10000, contextWindow: 20000, percent: 50 }),
             ui: {
                 notify: () => assert.fail("usage is available"),

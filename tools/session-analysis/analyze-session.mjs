@@ -124,9 +124,39 @@ function sessionAncestry(startId, entriesById) {
     return path;
 }
 
-/** In-place compaction summary (pi-context > 2.3); its context edits immediately precede it. */
+/** In-place compaction summary, with either a range rule or preceding legacy context edits. */
 const isFoldSummary = entry => entry.type === 'custom_message' && entry.customType === 'pi-context-compaction'
     && entry.details && typeof entry.details === 'object';
+
+// Evaluate raw ancestry: hidden or native-summarized summaries still contribute their range rules.
+function sessionFoldedEntryIds(path) {
+    const foldedIds = new Set();
+    const positions = new Map(path.map((entry, index) => [entry.id, index]));
+    const editedIds = new Set();
+    for (const [index, entry] of path.entries()) {
+        // Newest legacy edit wins; range omissions remain a union independent of edit replacements.
+        if (entry.type === 'context_edit' && !editedIds.has(entry.targetId)) {
+            editedIds.add(entry.targetId);
+            if (entry.replacement === null && positions.has(entry.targetId)) foldedIds.add(entry.targetId);
+        }
+        const range = isFoldSummary(entry) ? entry.details.range : null;
+        if (!range || typeof range !== 'object') continue;
+        const through = positions.get(range.throughId);
+        const after = range.afterId === null ? path.length : positions.get(range.afterId);
+        // Both endpoints must belong to the summary's original ancestor path, in range order.
+        if (through === undefined || after === undefined || through <= index || after <= through) continue;
+        const keptAssistant = path.find(candidate => candidate.id === range.keepToolResultsOf
+            && candidate.type === 'message' && candidate.message?.role === 'assistant');
+        const keptCalls = new Set(toolCalls(keptAssistant).map(call => call.id));
+        for (const candidate of path.slice(through, after)) {
+            const editable = candidate.type === 'custom_message' || (candidate.type === 'message'
+                && ['user', 'assistant', 'toolResult'].includes(candidate.message?.role));
+            const keptResult = candidate.message?.role === 'toolResult' && keptCalls.has(candidate.message.toolCallId);
+            if (editable && !keptResult) foldedIds.add(candidate.id);
+        }
+    }
+    return foldedIds;
+}
 
 function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
     const cwd = entries.find(entry => entry.type === 'session')?.cwd;
@@ -193,13 +223,12 @@ function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
     for (const tool of tools.filter(tool => tool.name === 'context_compact')) {
         const { call, entry } = privateTools.get(tool.key);
         const args = call.arguments ?? {};
-        // <= 2.3 compacts by branching; later versions fold history in place with context edits.
+        // <= 2.3 compacts by branching; later versions store in-place summary evidence.
         const branch = entries.find(candidate => candidate.type === 'branch_summary' && candidate.line > tool.line
             && tool.status !== 'error' && findOriginCall(candidate.fromId, entriesById, origin => origin.name === 'context_compact') === call);
         const fold = branch || tool.status === 'error' ? undefined : entries.find(candidate => isFoldSummary(candidate)
-            && candidate.line > tool.line && candidate.details?.requestEntryId === entry.id);
-        const foldedIds = new Set(fold ? entries.filter(candidate => candidate.type === 'context_edit' && candidate.replacement === null
-            && candidate.line > tool.line && candidate.line < fold.line).map(candidate => candidate.targetId) : []);
+            && candidate.line > tool.line && candidate.details?.requestEntryId === entry.id
+            && sessionAncestry(candidate.parentId, entriesById).some(ancestor => ancestor.id === entry.id));
         const boundary = branch ?? fold;
         const oldPath = sessionAncestry(branch?.fromId ?? fold?.parentId ?? entry.id, entriesById);
         const oldIds = new Set(oldPath.map(ancestor => ancestor.id));
@@ -212,8 +241,9 @@ function analyzeSessionTools(entries, entriesById, checkpoints, warnings) {
             targetId = args.target.toLowerCase() === 'root' ? oldPath.findLast(ancestor => ancestor.type !== 'session')?.id ?? null
                 : named?.targetId ?? (entriesById.has(args.target) ? args.target : null);
         }
-        const retainedIds = new Set(branch ? sessionAncestry(branch.parentId, entriesById).map(ancestor => ancestor.id)
-            : fold ? sessionAncestry(fold.id, entriesById).filter(ancestor => !foldedIds.has(ancestor.id)).map(ancestor => ancestor.id) : []);
+        const retainedPath = boundary ? sessionAncestry(branch ? branch.parentId : fold.id, entriesById) : [];
+        const foldedIds = sessionFoldedEntryIds(retainedPath);
+        const retainedIds = new Set(retainedPath.filter(ancestor => !foldedIds.has(ancestor.id)).map(ancestor => ancestor.id));
         const removedTools = boundary ? tools.filter(candidate => oldIds.has(candidate.entryId) && !retainedIds.has(candidate.entryId)) : [];
         const target = entriesById.get(targetId);
         const descendants = [], branchPathIds = new Set(boundary ? [boundary.id] : []);

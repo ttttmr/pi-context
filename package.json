@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "analyze:session": "node tools/session-analysis/session-analysis-cli.mjs",
     "test:live": "node test/live-compaction.mjs",
+    "test:range": "node test/live-range-compaction.mjs",
     "test:scenarios": "node test/live-scenarios.mjs",
     "test": "npm run typecheck && rm -rf dist && tsc --declaration false && node --test test/*.test.mjs"
   },

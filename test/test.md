@@ -21,6 +21,8 @@ Strictly follow the steps below.
 
 `npm test` drives a real `AgentSession` with Pi's faux provider (`test/compaction.test.mjs`) and asserts the provider-visible request after compaction: prefix through the target → summary message with retained step outputs, with closed tool-call/result pairs and no rerun. It covers direct siblings, codemode scripts (whole output kept, `codemode-store` state still loadable), steering sent during the compact step (delivered after the summary), duplicate requests, invalid/folded targets, a target assistant's own tool results, repeated compaction to `root`, user interruption, backup-checkpoint recovery, timeline folding, and the summary renderer.
 
+Range regressions verify that compacting 10 or 2,000 historical entries adds only one summary record and no `context_edit` entries, and that saved rules survive reopening without affecting sibling branches. Native-compaction tests exercise manual, threshold, and overflow paths through Pi's default summarizer, checking both summary inputs and file metadata for hidden content. Helper tests cover overlapping ranges, request-message provenance, and cumulative/nested file operations. `live-context-capture.test.mjs` exercises the actual live capture fixture through Node IPC with Pi's RPC stdout guard enabled, without calling a paid model.
+
 For a manual codemode check, enable the built-in codemode extension with `codemode.mode="only"` in isolated settings and explicitly load this checkout's `src/index.ts` (not an older installed copy). In one script, print a tool result, await `context_compact` to an earlier checkpoint, then print another result. Confirm the transcript shows a "Context compacted" message, the model continues without rerunning the script, and can still `load()` stored values.
 
 ## Live compaction validation
@@ -49,7 +51,7 @@ Session files, raw RPC events, stderr, and per-phase verified results are saved 
 
 ## Live scenario matrix
 
-`npm run test:scenarios` runs every compaction scenario against a real model in isolated Pi RPC processes (same model/extension configuration as `test:live`; costs tokens). Each scenario sets up `start-<id>` → noisy step → `inner-<id>`, then exercises one case and checks the model context (`get_messages`), raw entries, tool executions, and the model's reply.
+`npm run test:scenarios` runs every compaction scenario against a real model in isolated Pi RPC processes (same model/extension configuration as `test:live`; costs tokens). Each scenario sets up `start-<id>` → noisy step → `inner-<id>`, then exercises one case and checks the actual model context captured by a test-only `context` handler loaded after pi-context, raw entries, tool executions, and the model's reply. RPC `get_messages` returns canonical history, which intentionally still contains the hidden raw messages; it is not evidence of what a filtered request sends.
 
 | Group | Scenarios |
 |---|---|
@@ -64,6 +66,27 @@ PI_CONTEXT_SCENARIO_CONCURRENCY=4 npm run test:scenarios
 ```
 
 Concurrency defaults to 1; each Pi process uses about 200 MB. Results, per-scenario RPC events and session files are written to the printed artifact directory. A cancelled step is judged at its own boundary; the model may legitimately retry afterwards. A stalled model stream (rare degenerate output) is aborted and the prompt retried once.
+
+## Live range chains
+
+`npm run test:range` adds real-model chains around the range implementation, using the same private model configuration and RPC harness. The test-only controls fixture is loaded after pi-context: it records filtered native preparation, actual contexts passed to the provider, and native completion. The provider observer forwards the original context/options unchanged and is restored on shutdown; native summaries bypass the ordinary `before_provider_request` event. Assertions check hidden text and paths against positive controls in raw history, preserve visible/shared file tracking, require Pi's default generator, and check tool-call/result pairs.
+
+| Case | Chain |
+|---|---|
+| R1 | Direct reads → range → native split-turn summary → restart → repeated native summary |
+| R2 | Same chain with nested reads through codemode only |
+| R3 | 20 synthetic historical entries → real range call → native summary → summarized range rule → restart → root |
+| R4 | 2,000 synthetic historical entries → real range call → native kept boundary inside hidden history → summarized range rule → restart → root |
+| R5 | Actual tree navigation to backup, a sibling branch, and back to the compacted branch, with real model requests on each |
+| R6 | Range → restart → genuine threshold-triggered native summary → continuation |
+
+```bash
+npm run test:range
+PI_CONTEXT_SCENARIOS=R1,R4 npm run test:range
+PI_CONTEXT_SCENARIO_CONCURRENCY=2 npm run test:range
+```
+
+R3/R4 seed historical custom messages while Pi is stopped; those entries are fixtures, not thousands of paid model turns. The compact calls, native summaries, reopenings, and continuation requests use the real model. Range metadata size and absence of per-entry edits are checked independently of native-summary text length. The harness waits for native compaction as well as streaming to finish, and disables prompt retries for these chains so a retry cannot hide a failed run. Test artifacts can contain the synthetic secret markers, request contexts, file paths, and timestamps; they stay in the temporary artifact directory.
 
 ## Interactive check
 

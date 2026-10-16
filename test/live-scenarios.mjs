@@ -8,7 +8,7 @@ import { loadLiveConfig, startPi, text } from "./live-rpc.mjs";
 // Opt-in live scenario matrix: real model, existing Pi auth, costs tokens.
 // Each scenario runs in its own Pi process: checkpoint start-<id> → noisy step
 // (NOISE_<token>, checkpoint inner-<id>) → the scenario's compaction. Checks use
-// the model context (get_messages), raw entries, tool executions and the reply.
+// actual context hook output, canonical history, raw entries, tool executions and the reply.
 const { model, extensions } = await loadLiveConfig();
 const artifacts = await mkdtemp(resolve(tmpdir(), "pi-context-scenarios-"));
 const only = process.env.PI_CONTEXT_SCENARIOS?.split(",").filter(Boolean);
@@ -124,7 +124,8 @@ async function setup(pi, scenario, token) {
 
 async function inspect(pi) {
     const { entries } = await pi.request("get_entries");
-    const { messages } = await pi.request("get_messages");
+    const { messages: canonicalMessages } = await pi.request("get_messages");
+    const messages = pi.getContextMessages();
     const summaries = messages.filter((message) => message.role === "custom" && message.customType === "pi-context-compaction");
     const calls = new Set();
     let pairsClosed = true;
@@ -133,7 +134,7 @@ async function inspect(pi) {
         if (message.role === "toolResult" && !calls.delete(message.toolCallId)) pairsClosed = false;
     }
     return {
-        entries, messages, summaries, pairsClosed: pairsClosed && calls.size === 0,
+        entries, messages, canonicalMessages, summaries, pairsClosed: pairsClosed && calls.size === 0,
         visible: messages.map(text).join("\n"),
         edits: entries.filter((entry) => entry.type === "context_edit"),
     };
@@ -195,6 +196,11 @@ async function runScenario(scenario) {
         if (scenario.expect === "applied") {
             check("summary in model context", latest && text(latest).includes(`Scenario ${id} setup history was compacted`));
             check("noise folded out of model context", !after.visible.includes(`NOISE_${token}`));
+            check("canonical history retains noise", after.canonicalMessages.some((message) => text(message).includes(`NOISE_${token}`)));
+            const stored = after.entries.filter((entry) => entry.type === "custom_message" && entry.customType === "pi-context-compaction");
+            check("one summary stores the compaction range", stored.length === 1 && typeof stored[0].details?.range?.throughId === "string" &&
+                (stored[0].details.range.afterId === null || typeof stored[0].details.range.afterId === "string"));
+            check("compaction writes no context edits", after.edits.length === 0);
             check("prefix before target kept", after.visible.includes(`Scenario ${id} setup step 1`));
             const replies = events.filter((event) => event.type === "message_end" && event.message.role === "assistant").map((event) => text(event.message));
             check("model continued with the summary's next step", replies.some((value) => value.includes(`DONE_${id}`)), reply);
@@ -266,9 +272,10 @@ async function repeatedScenario(pi, { id }, token, check) {
 async function nativeScenario(pi, { id }, token, check) {
     const native = await pi.request("compact", {}, 180000);
     check("native compaction ran", native?.summary, JSON.stringify(native).slice(0, 200));
-    check("setup: start checkpoint is before the native kept range", !(await inspect(pi)).visible.includes(`Scenario ${id} setup step 1`));
+    // The next model request exposes the context produced after native compaction.
     // An older target cannot keep "everything up to it": Pi's summary already replaced it.
     let events = await pi.prompt(`Call context_compact exactly once with ${compactArgs(id)}. If it fails, do not retry; reply exactly REJECTED_${id}.`);
+    check("setup: start checkpoint is before the native kept range", !(await inspect(pi)).visible.includes(`Scenario ${id} setup step 1`));
     const rejection = events.find((event) => event.type === "tool_execution_end" && event.toolName === "context_compact");
     check("old target rejected", rejection?.isError && JSON.stringify(rejection.result).includes("already compacted"), JSON.stringify(rejection?.result).slice(0, 200));
     let after = await inspect(pi);

@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { CompactionSummaryType, describeHistoryInterval, estimateHistoryTokens, formatTokens, formatContextUsage, isContextTool as isInternal, isEditableContextEntry, parseCheckpointPhase, RetainedCodemodeOutputType } from "./utils.js";
+import { filterCompactionMessages, filterNativeCompaction, getCompactionContextUsage, getCompactionProjection, type CompactionRange } from "./compaction-context.js";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
@@ -61,12 +62,12 @@ const resolveTargetId = (sm: ReadonlySessionManager, target: string): string => 
 
 /**
  * Locate a compaction target in the current model context. Pi's native compaction
- * replaces history before its kept range with a summary that cannot be omitted, so
- * a target there cannot keep exactly "everything up to the target". Root means the
- * start of the current context. Returns the context-ordered projection and index.
+ * has already summarized history before its kept range, so a target there cannot
+ * preserve its original prefix. Root means the start of the current context.
+ * Returns the context-ordered projection and index.
  */
 const locateContextTarget = (sm: ReadonlySessionManager, targetId: string, root: boolean) => {
-    const projection = sm.buildSessionProjection().entries;
+    const projection = getCompactionProjection(sm);
     if (root) return { projection, index: -1 };
     const index = projection.findIndex((entry) => entry.sourceEntry.id === targetId);
     if (index < 0) return { projection, index, reason: "outside" as const };
@@ -113,6 +114,7 @@ export interface CompactionDetails {
     foldedTokens: number;
     retained: number;
     backupCheckpoint?: string;
+    range?: CompactionRange;
 }
 
 // Context tool results describe pre-fold state; a script whose recorded calls were
@@ -127,10 +129,9 @@ const isManagementResult = (result: ToolResultMessage) => {
 const truncate = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
 
 /**
- * Fold history at the end of the step that requested compaction. turn_end runs after
- * every tool result of that step is persisted and before steering or the next request,
- * so the step is complete and nothing else can interleave. The request message and its
- * results are folded together, so no tool call or result is orphaned.
+ * Record one compact range at the end of the requesting step. turn_end runs after
+ * every result is persisted and before steering or the next request. The context
+ * hook applies the range on each request, keeping tool calls and results paired.
  */
 const planCompaction = (
     sm: ReadonlySessionManager,
@@ -142,15 +143,17 @@ const planCompaction = (
 
     // Keep results answering calls of the last assistant message at or before the target.
     const keptCalls = new Set<string>();
+    let keepToolResultsOf: string | undefined;
     for (let i = targetIndex; i >= 0; i--) {
         const entry = projection[i].sourceEntry;
         if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+        keepToolResultsOf = entry.id;
         for (const block of entry.message.content) if (block.type === "toolCall") keptCalls.add(block.id);
         break;
     }
     // Context order, not raw order: a native compaction summary leads the context.
     // Non-editable entries (system loadout, user bash, branch summaries, native
-    // compaction) stay visible; Pi cannot omit them and they carry required state.
+    // compaction) stay visible to preserve required state and existing behavior.
     const folded = projection.slice(targetIndex + 1).flatMap(({ sourceEntry, messages }) => {
         if (!messages.length || !isEditableContextEntry(sourceEntry)) return [];
         if (sourceEntry.type === "message" && sourceEntry.message.role === "toolResult" &&
@@ -187,10 +190,14 @@ const planCompaction = (
         summary: request.summary, folded: folded.length,
         foldedTokens: folded.reduce((sum, entry) => sum + estimateHistoryTokens(entry), 0),
         retained: retained.length, backupCheckpoint: request.backupCheckpoint,
+        range: {
+            afterId: request.root ? null : request.targetId,
+            throughId: sm.getLeafId()!,
+            ...(keepToolResultsOf && keptCalls.size ? { keepToolResultsOf } : {}),
+        },
     };
     return {
         entries: [
-            ...folded.map((entry): SessionBoundaryDraft => ({ type: "context_edit", targetId: entry.id, replacement: null })),
             { type: "custom_message", customType: CompactionSummaryType, content, display: true, details },
         ],
         details,
@@ -206,6 +213,11 @@ export default function (pi: ExtensionAPI) {
 
     pi.on("session_shutdown", () => {
         pendingCompact = null;
+    });
+
+    pi.on("context", (event, ctx) => ({ messages: filterCompactionMessages(ctx.sessionManager, event.messages) }));
+    pi.on("session_before_compact", (event, ctx) => {
+        filterNativeCompaction(ctx.sessionManager, event);
     });
 
     pi.registerCommand("acm", {
@@ -338,7 +350,7 @@ export default function (pi: ExtensionAPI) {
             const limit = params.limit ?? 50;
 
             const backboneIds = new Set(branch.map((e) => e.id));
-            const projection = sm.buildSessionProjection().entries;
+            const projection = getCompactionProjection(sm);
             const foldedIds = new Set(projection.filter(isFoldedEntry).map((entry) => entry.sourceEntry.id));
             // Active-path history Pi's native compaction replaced with its summary: not compact targets.
             const contextIds = new Set(projection.map((entry) => entry.sourceEntry.id));
@@ -550,7 +562,7 @@ export default function (pi: ExtensionAPI) {
             });
 
             flushHidden();
-            const hud = `Context: ${formatContextUsage(ctx.getContextUsage(), true)}`;
+            const hud = `Context: ${formatContextUsage(getCompactionContextUsage(sm, ctx.getContextUsage()), true)}`;
 
             return { content: [{ type: "text", text: hud + "\n" + (lines.join("\n") || "(Root Path Only)") }], details: {} };
         },
@@ -614,7 +626,7 @@ export default function (pi: ExtensionAPI) {
         if (request.invalidated) return cancel("more than one compact request was made.");
         // A tool step interrupted by the user still reports a completed assistant message.
         if (ctx.signal?.aborted || event.outcome !== "completed") return cancel("the request was interrupted.", false);
-        const usageBefore = formatContextUsage(ctx.getContextUsage());
+        const usageBefore = formatContextUsage(getCompactionContextUsage(ctx.sessionManager, ctx.getContextUsage()));
         const plan = planCompaction(ctx.sessionManager, request, event);
         if ("error" in plan) return cancel(plan.error);
         if (request.backupCheckpoint) {

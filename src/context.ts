@@ -4,19 +4,20 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Spacer } from "@earendil-works/pi-tui";
 import { CompactionSummaryType, estimateHistoryTokens, formatTokens, RetainedCodemodeOutputType } from "./utils.js";
+import { getCompactionContextUsage, getCompactionProjection } from "./compaction-context.js";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("context", {
     description: "Show context usage visualization",
     handler: async (args, ctx) => {
-      const usage = await ctx.getContextUsage();
+      const usage = getCompactionContextUsage(ctx.sessionManager, ctx.getContextUsage());
       if (!usage) {
         ctx.ui.notify("Context usage info not available.", "warning");
         return;
       }
 
-      // Count only what the model sees: the projection drops folded and natively compacted history.
-      const contextEntries = ctx.sessionManager.buildSessionProjection().entries
+      // Apply the same saved ranges as the model request hook.
+      const contextEntries = getCompactionProjection(ctx.sessionManager)
         .filter((entry) => entry.messages.length > 0)
         .map((entry) => entry.sourceEntry);
       const systemPrompt = ctx.getSystemPrompt();

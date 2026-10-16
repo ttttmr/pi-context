@@ -11,10 +11,11 @@ import {
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
 
 import registerContext from "../dist/index.js";
+import { getCompactionProjection } from "../dist/compaction-context.js";
 
 // End-to-end on a real AgentSession: the faux provider records each request's
 // provider-visible messages, so assertions cover what the model actually sees.
-async function createHarness({ codemode = false, onEcho, settings = {} } = {}) {
+async function createHarness({ codemode = false, onEcho, settings = {}, persistent = false, sessionFile } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "pi-context-test-"));
     const faux = fauxProvider();
     const modelRuntime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: null, refreshOnCreate: false });
@@ -38,7 +39,8 @@ async function createHarness({ codemode = false, onEcho, settings = {} } = {}) {
         extensionFactories: [extension, ...(codemode ? [createCodemodeExtension({ mode: "only" })] : [])],
     });
     await loader.reload();
-    const sm = SessionManager.inMemory(dir);
+    const sm = sessionFile ? SessionManager.open(sessionFile) :
+        persistent ? SessionManager.create(dir, dir) : SessionManager.inMemory(dir);
     ({ session } = await createAgentSession({
         cwd: dir, agentDir: dir, model: faux.getModel(), modelRuntime, resourceLoader: loader, sessionManager: sm,
         settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, ...settings }),
@@ -112,6 +114,9 @@ test("folds history after the target in the same run and keeps sibling outputs",
         assert.match(visible[2], /\[echo \{"s":"sibling"\}\]\necho:sibling/);
         assert.doesNotMatch(visible[2], /noise|compact start/);
         assert.ok(pairsAreClosed(afterCompact));
+        assert.deepEqual(contextEdits(h.sm), [], "one range replaces all per-entry edits");
+        const compact = h.sm.getBranch().find((entry) => entry.type === "custom_message" && entry.customType === "pi-context-compaction");
+        assert.ok(compact.details.range.afterId && compact.details.range.throughId);
 
         // Raw history is untouched; the backup label restores the original context.
         const backupId = h.sm.getBranch().find((entry) => h.sm.getLabel(entry.id) === "phase-raw")?.id;
@@ -334,3 +339,119 @@ test("summary renderer shows the summary collapsed and kept tool outputs when ex
     assert.doesNotMatch(collapsed, /OUTPUT_CANARY/);
     assert.match(expanded, /OUTPUT_CANARY/);
 });
+
+for (const historySize of [10, 2000]) {
+    test(`compacting ${historySize} history entries stores one range and no edits`, { timeout: 10000 }, async () => {
+        const h = await createHarness();
+        try {
+            await h.run("first", [h.reply("TARGET answer")]);
+            h.label("phase-start");
+            for (let i = 0; i < historySize; i++) {
+                h.sm.appendMessage({ role: "user", content: `HISTORY_CANARY_${i}`, timestamp: i });
+            }
+            const before = h.sm.getEntries().length;
+            await h.run("compact", [
+                h.reply(h.call("context_compact", { target: "phase-start", summary: "STATE_ONLY" }, "c1")),
+                h.reply("done"),
+            ]);
+            const added = h.sm.getEntries().slice(before);
+            assert.equal(added.length, 5, "prompt, call, result, one summary, continuation");
+            assert.equal(added.filter((entry) => entry.type === "custom_message").length, 1);
+            assert.deepEqual(contextEdits(h.sm), []);
+            const summary = added.find((entry) => entry.type === "custom_message");
+            assert.ok(JSON.stringify(summary.details.range).length < 160, "range size is independent of history length");
+            assert.doesNotMatch(JSON.stringify(h.requests.at(-1)), /HISTORY_CANARY/);
+            assert.ok(h.sm.getBranch().some((entry) => entry.type === "message" && entry.message.content === "HISTORY_CANARY_0"));
+        } finally { await h.dispose(); }
+    });
+}
+
+test("saved range survives reopening, restores at backup, and does not affect a sibling branch", { timeout: 10000 }, async () => {
+    const h = await createHarness({ persistent: true });
+    let resumed;
+    try {
+        await h.run("first", [h.reply("TARGET answer")]);
+        h.label("phase-start");
+        const targetId = h.sm.getLeafId();
+        await h.run("SAVED_RAW_CANARY", [
+            h.reply(h.call("context_compact", { target: "phase-start", summary: "SAVED_STATE", backupCheckpoint: "raw" }, "c1")),
+            h.reply("done"),
+        ]);
+        resumed = await createHarness({ sessionFile: h.sm.getSessionFile() });
+        await resumed.run("continue", [resumed.reply("resumed")]);
+        assert.match(JSON.stringify(resumed.requests.at(-1)), /SAVED_STATE/);
+        assert.doesNotMatch(JSON.stringify(resumed.requests.at(-1)), /SAVED_RAW_CANARY/);
+        const backupId = resumed.sm.getBranch().find((entry) => resumed.sm.getLabel(entry.id) === "raw").id;
+        resumed.sm.branch(backupId);
+        assert.match(JSON.stringify(getCompactionProjection(resumed.sm)), /SAVED_RAW_CANARY/);
+        resumed.sm.branch(targetId);
+        resumed.sm.appendMessage({ role: "user", content: "SIBLING_CANARY", timestamp: Date.now() });
+        const sibling = getCompactionProjection(resumed.sm).flatMap((entry) => entry.messages);
+        assert.match(JSON.stringify(sibling), /SIBLING_CANARY/);
+        assert.doesNotMatch(JSON.stringify(sibling), /SAVED_STATE/);
+    } finally { await resumed?.dispose(); await h.dispose(); }
+});
+
+for (const reason of ["manual", "threshold", "overflow"]) {
+    test(`${reason} native compaction excludes hidden text and file operations while using Pi's generator`, { timeout: 10000 }, async () => {
+        const h = await createHarness({ settings: { compaction: {
+            enabled: false, reserveTokens: reason === "threshold" ? 118000 : 16384, keepRecentTokens: 20,
+        } } });
+        try {
+            await h.run("first", [h.reply("TARGET answer")]);
+            h.sm.appendMessage(fauxAssistantMessage([h.call("read", { path: "/shared-file.ts" }, "kept-read")]));
+            h.sm.appendMessage({ role: "toolResult", toolName: "read", toolCallId: "kept-read",
+                content: [{ type: "text", text: "KEEP_READ" }], timestamp: Date.now() });
+            h.sm.appendMessage(fauxAssistantMessage("KEPT read result"));
+            h.label("phase-start");
+            h.sm.appendMessage({ role: "user", content: "HIDDEN_BODY_CANARY " + "x".repeat(100000), timestamp: Date.now() });
+            h.sm.appendMessage(fauxAssistantMessage([
+                h.call("read", { path: "/hidden-file-canary.ts" }, "hidden-read"),
+                h.call("edit", { path: "/hidden-edit-canary.ts" }, "hidden-edit"),
+                h.call("read", { path: "/shared-file.ts" }, "hidden-shared-read"),
+            ]));
+            for (const [toolCallId, toolName] of [["hidden-read", "read"], ["hidden-edit", "edit"], ["hidden-shared-read", "read"]]) {
+                h.sm.appendMessage({ role: "toolResult", toolName, toolCallId,
+                    content: [{ type: "text", text: "HIDDEN_RESULT_CANARY" }], timestamp: Date.now() });
+            }
+            await h.run("compact noisy work", [
+                h.reply(h.call("context_compact", { target: "phase-start", summary: "VISIBLE_STATE_CANARY" }, "c1")),
+                h.reply("continue"),
+            ]);
+            // A recent long user-message span exercises the separate turn-prefix summarizer.
+            h.sm.appendMessage({ role: "user", content: "RECENT_WORK " + "r".repeat(400), timestamp: Date.now() });
+            h.sm.appendMessage(fauxAssistantMessage("RECENT_RESULT " + "a".repeat(400)));
+            const reasons = [];
+            h.session.subscribe((event) => { if (event.type === "compaction_start") reasons.push(event.reason); });
+            const summaryRequests = [];
+            let sentOverflow = false;
+            h.faux.setResponses(Array.from({ length: 10 }, () => (context) => {
+                const summarizing = context.messages.some((message) => message.role === "system" &&
+                    textOf(message.content).includes("You are a context summarization assistant."));
+                if (summarizing) {
+                    summaryRequests.push(context.messages);
+                    return fauxAssistantMessage("NATIVE_CLEAN_SUMMARY");
+                }
+                if (reason === "overflow" && !sentOverflow) {
+                    sentOverflow = true;
+                    return { ...fauxAssistantMessage(""), stopReason: "error", errorMessage: "maximum context length exceeded" };
+                }
+                return fauxAssistantMessage("finished");
+            }));
+            if (reason === "manual") await h.session.compact();
+            else {
+                h.session.setAutoCompactionEnabled(true);
+                await h.session.prompt("continue after compaction" + (reason === "threshold" ? "p".repeat(50000) : ""));
+            }
+            assert.deepEqual(h.errors, []);
+            assert.ok(reasons.includes(reason), JSON.stringify(reasons));
+            assert.ok(summaryRequests.length >= 1);
+            assert.match(JSON.stringify(summaryRequests), /VISIBLE_STATE_CANARY/);
+            assert.doesNotMatch(JSON.stringify(summaryRequests), /HIDDEN_BODY_CANARY|HIDDEN_RESULT_CANARY|hidden-file-canary|hidden-edit-canary/);
+            const native = h.sm.getBranch().filter((entry) => entry.type === "compaction").at(-1);
+            assert.equal(native.fromHook, false, "default prompts, routing, retries and generation remain Pi's");
+            assert.doesNotMatch(native.summary, /hidden-file-canary|hidden-edit-canary/);
+            assert.ok(native.details.readFiles.includes("/shared-file.ts"), "a visible read of the same path must remain");
+        } finally { await h.dispose(); }
+    });
+}

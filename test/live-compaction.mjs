@@ -26,10 +26,14 @@ async function compactPhase(pi, phase, expectedSummaries, late = false) {
     assert.ok(phaseEvents.some((event) => event.type === "message_end" && event.message.role === "assistant" &&
         text(event.message).trim() === marker), `Phase ${phase} did not continue to ${marker}`);
     const { entries, leafId } = await pi.request("get_entries");
-    const { messages } = await pi.request("get_messages");
+    const { messages: canonicalMessages } = await pi.request("get_messages");
+    const messages = pi.getContextMessages();
     const summaries = entries.filter((entry) => entry.type === "custom_message" && entry.customType === "pi-context-compaction");
     assert.equal(summaries.length, expectedSummaries);
     assert.match(summaries.at(-1).details.summary, new RegExp(marker));
+    assert.equal(typeof summaries.at(-1).details.range?.throughId, "string", "summary stores the compaction range");
+    assert.equal(summaries.at(-1).details.range.afterId, null, "root range starts at the beginning of context");
+    assert.equal(entries.filter((entry) => entry.type === "context_edit").length, 0, "compaction writes no context edits");
     assert.equal(entries.filter((entry) => entry.type === "branch_summary").length, 0, "compaction does not branch");
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     const activeIds = [];
@@ -38,6 +42,8 @@ async function compactPhase(pi, phase, expectedSummaries, late = false) {
     // Model context: folded prompts are gone, the latest summary is present, pairs stay closed.
     const visible = messages.map(text).join("\n");
     assert.ok(!visible.includes(`Integration test phase ${phase}.`), "folded prompt left model context");
+    assert.ok(canonicalMessages.some((message) => text(message).includes(`Integration test phase ${phase}.`)),
+        "canonical history keeps the folded prompt");
     assert.ok(messages.some((message) => message.role === "custom" && message.customType === "pi-context-compaction" &&
         text(message).includes(marker)), "summary is in model context");
     if (late) {

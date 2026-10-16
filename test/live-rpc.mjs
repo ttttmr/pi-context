@@ -43,6 +43,7 @@ export async function startPi({ name, artifacts, model, extensions = [], session
         "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates",
         ...(tools ? ["--tools", tools.join(",")] : ["--no-builtin-tools"]),
         ...extensions.flatMap((path) => ["-e", path]), "-e", resolve(root, "src/index.ts"), ...extraArgs,
+        "-e", resolve(root, "test/live-context-capture-extension.ts"),
         "--system-prompt", systemPrompt ?? "Execute the requested integration test exactly. Keep output minimal. After compaction obey the summary's next step; never repeat completed tool calls.",
         ...(sessionFile ? ["--session", sessionFile] : ["--session-dir", resolve(artifacts, name)]),
     ];
@@ -60,7 +61,8 @@ export async function startPi({ name, artifacts, model, extensions = [], session
     const events = [];
     const pending = new Map();
     let sequence = 0, stderr = "", buffer = "";
-    const child = spawn(process.execPath, args, { cwd: artifacts, stdio: ["pipe", "pipe", "pipe"], env });
+    const child = spawn(process.execPath, args, { cwd: artifacts, stdio: ["pipe", "pipe", "pipe", "ipc"], env });
+    child.on("message", (event) => { events.push(event); });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -89,6 +91,12 @@ export async function startPi({ name, artifacts, model, extensions = [], session
     const pi = {
         events,
         get stderr() { return stderr; },
+        /** Actual context of the last model request; RPC get_messages retains canonical history. */
+        getContextMessages() {
+            const request = events.findLast((event) => event.type === "context_test_request");
+            assert.ok(request, "Live context capture did not observe a model request");
+            return request.messages;
+        },
         async request(type, fields = {}, timeoutMs = 30000) {
             assert.equal(child.exitCode, null, stderr);
             const id = String(++sequence);
@@ -111,7 +119,7 @@ export async function startPi({ name, artifacts, model, extensions = [], session
                 await delay(500);
                 if (!events.slice(offset).some((event) => event.type === "agent_end")) continue;
                 const state = await pi.request("get_state");
-                if (!state.isStreaming && state.pendingMessageCount === 0) return;
+                if (!state.isStreaming && !state.isCompacting && state.pendingMessageCount === 0) return;
             }
             throw new Error(`run did not settle within ${timeoutMs}ms`);
         },
