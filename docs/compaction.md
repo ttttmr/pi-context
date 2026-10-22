@@ -6,7 +6,7 @@ How `context_compact` works, why it works this way, and what to keep in mind whe
 
 Compaction folds the history after a target into a handoff summary, **inside the agent run, at the end of the step that requested it**:
 
-- One `custom_message` of type `pi-context-compaction` carries the summary, the outputs of other tool calls in the same step, and a `details.range` rule. It is model-visible and shown in the transcript (rendered as "Context compacted"). No per-entry `context_edit` records are emitted.
+- One `custom_message` of type `pi-context-compaction` carries the summary, the outputs of other tool calls in the same step, and a `details.range` rule. It is model-visible and shown in the transcript (rendered as a one-line "Context compacted" title; the tool-output expand key shows the full content). No per-entry `context_edit` records are emitted.
 - The `context` event filters messages covered by ancestor range rules before each model request. Raw history is never deleted or rewritten; it stays in the session file, the transcript, and exports.
 - Compaction never branches, navigates, aborts, or starts a new run. The active path only grows.
 

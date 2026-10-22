@@ -31,7 +31,7 @@ ACM (**A**gentic **C**ontext **M**anagement) works automatically with Pi >= 1.2.
 
 `/acm` and `/acm <task>` remain available for compatibility.
 
-After a compaction the transcript shows a "Context compacted" message; earlier messages stay visible, and the backup checkpoint (or `/tree`) returns to the original context.
+After a compaction the transcript shows a one-line "Context compacted" message (press `ctrl+o` to expand the handoff summary); earlier messages stay visible, and the backup checkpoint (or `/tree`) returns to the original context.
 
 ### Checkpoint naming and timeline estimates
 

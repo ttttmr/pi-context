@@ -1,4 +1,5 @@
 import {
+    keyText,
     type ExtensionAPI,
     type ExtensionContext,
     type SessionBoundaryDraft,
@@ -234,12 +235,13 @@ export default function (pi: ExtensionAPI) {
                 (details.retained ? ` · kept ${details.retained} tool outputs` : "") +
                 (details.backupCheckpoint ? ` · backup: ${details.backupCheckpoint}` : ""))
             : "");
-        const body = expanded || !details
-            ? (typeof message.content === "string" ? message.content
+        // Summaries can run to hundreds of lines: collapse to the title like Pi's own compaction summary.
+        const body = expanded
+            ? "\n" + (typeof message.content === "string" ? message.content
                 : message.content.map((block) => block.type === "text" ? block.text : "[image]").join(""))
-            : details.summary;
+            : theme.fg("dim", ` (${keyText("app.tools.expand")} to expand)`);
         const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
-        box.addChild(new Text(`${title}\n${body}`, 0, 0));
+        box.addChild(new Text(title + body, 0, 0));
         return box;
     });
 
