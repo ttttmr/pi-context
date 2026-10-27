@@ -94,7 +94,7 @@ R3/R4 seed historical custom messages while Pi is stopped; those entries are fix
 pi --no-skills --no-extensions -e ./src/index.ts -e ./src/context.ts
 ```
 
-1. Without running `/acm`, ask the agent to checkpoint, do some noisy work, and call `context_compact` together with another tool in one step. Confirm a "Context compacted" message appears (expand it to see the kept step output) and the agent continues without rerunning the other tool.
+1. Without running `/acm`, ask the agent to checkpoint, do some noisy work, and call `context_compact` together with another tool in one step. Confirm a one-line "Context compacted" message appears (press `ctrl+o` to expand it and see the summary and kept step output) and the agent continues without rerunning the other tool.
 2. Type a message while the compact step runs; confirm it is answered after the summary.
 3. Run `/context` and `context_timeline`; confirm folded history is excluded from usage and shown as folded.
 4. Navigate with `/tree` to the backup checkpoint and confirm the original context is restored.

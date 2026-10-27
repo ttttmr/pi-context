@@ -9,6 +9,7 @@ import {
     ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { getKeybindings, KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 
 import registerContext from "../dist/index.js";
 import { getCompactionProjection } from "../dist/compaction-context.js";
@@ -393,7 +394,7 @@ test("/acm remains a compatibility command", async () => {
     assert.deepEqual(sent, [{ content: "continue the task", options: { deliverAs: "followUp" } }]);
 });
 
-test("summary renderer shows the summary collapsed and kept tool outputs when expanded", () => {
+test("summary renderer collapses to the title and shows the summary and kept tool outputs when expanded", () => {
     let render;
     registerContext({
         registerCommand: () => {}, registerTool: () => {}, on: () => {},
@@ -405,12 +406,20 @@ test("summary renderer shows the summary collapsed and kept tool outputs when ex
         content: [{ type: "text", text: "Context compacted...\n\nSUMMARY_CANARY" }, { type: "text", text: "\n[read]\nOUTPUT_CANARY" }],
         details: { target: "phase-start", summary: "SUMMARY_CANARY", folded: 6, foldedTokens: 1200, retained: 1, backupCheckpoint: "raw" },
     };
-    const collapsed = render(message, { expanded: false, outputPad: 1 }, theme).render(120).join("\n");
-    const expanded = render(message, { expanded: true, outputPad: 1 }, theme).render(120).join("\n");
-    assert.match(collapsed, /Context compacted to phase-start · 6 entries \(~1k tokens\) · kept 1 tool outputs · backup: raw/);
-    assert.match(collapsed, /SUMMARY_CANARY/);
-    assert.doesNotMatch(collapsed, /OUTPUT_CANARY/);
-    assert.match(expanded, /OUTPUT_CANARY/);
+    // Interactive mode installs the app keybindings that the expand hint reads.
+    const previous = getKeybindings();
+    setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+    try {
+        const collapsed = render(message, { expanded: false, outputPad: 1 }, theme).render(120).join("\n");
+        const expanded = render(message, { expanded: true, outputPad: 1 }, theme).render(120).join("\n");
+        assert.match(collapsed, /Context compacted to phase-start · 6 entries \(~1k tokens\) · kept 1 tool outputs · backup: raw \(ctrl\+o to expand\)/);
+        assert.doesNotMatch(collapsed, /SUMMARY_CANARY|OUTPUT_CANARY/);
+        assert.match(expanded, /Context compacted to phase-start/);
+        assert.match(expanded, /SUMMARY_CANARY/);
+        assert.match(expanded, /OUTPUT_CANARY/);
+    } finally {
+        setKeybindings(previous);
+    }
 });
 
 for (const historySize of [10, 2000]) {
